@@ -1,0 +1,185 @@
+version: '3.8'
+
+networks:
+  observability-net:
+    driver: bridge
+
+volumes:
+  couchbase_data:
+    driver: local
+  postgres_data:
+    driver: local
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. Couchbase Database Server
+  # ---------------------------------------------------------------------------
+  couchbase:
+    container_name: couchbase
+    image: couchbase:community
+    ports:
+      - "8091:8091" # Web Console
+      - "8092:8092" # Views / Query
+      - "8093:8093" # N1QL Query service
+      - "11210:11210" # Data / Memcached port
+    environment:
+      - COUCHBASE_USER=Administrator
+      - COUCHBASE_PASSWORD=password
+    volumes:
+      - couchbase_data:/opt/couchbase/var
+    networks:
+      - observability-net
+
+  # ---------------------------------------------------------------------------
+  # 1b. Couchbase Cluster ('airline') & Bucket Auto-Initializer
+  # ---------------------------------------------------------------------------
+  couchbase-init:
+    container_name: couchbase-init
+    image: couchbase:community
+    depends_on:
+      - couchbase
+    volumes:
+      - ./init-couchbase.sh:/init-couchbase.sh
+    entrypoint: ["/bin/sh", "/init-couchbase.sh"]
+    networks:
+      - observability-net
+
+  # ---------------------------------------------------------------------------
+  # 2. PostgreSQL Database Server
+  # ---------------------------------------------------------------------------
+  postgres:
+    container_name: postgres
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=passengers_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d passengers_db"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - observability-net
+
+  # ---------------------------------------------------------------------------
+  # 3. OpenTelemetry Collector
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    container_name: otel-collector
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317" # OTLP gRPC receiver
+      - "4318:4318" # OTLP HTTP receiver
+      - "8889:8889" # Prometheus metrics exporter
+    networks:
+      - observability-net
+
+  # ---------------------------------------------------------------------------
+  # 4. Prometheus (Metrics Monitoring)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - observability-net
+    depends_on:
+      - otel-collector
+
+  # ---------------------------------------------------------------------------
+  # 5. Grafana Tempo (Distributed Tracing Backend)
+  # ---------------------------------------------------------------------------
+  tempo:
+    container_name: tempo
+    image: grafana/tempo:2.4.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo-config.yaml:/etc/tempo.yaml
+    ports:
+      - "3200:3200" # Tempo HTTP GUI / API
+    networks:
+      - observability-net
+
+  # ---------------------------------------------------------------------------
+  # 5b. Grafana UI (Visualization Dashboard for Metrics & Tempo Traces)
+  # ---------------------------------------------------------------------------
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000" # Grafana UI
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+    networks:
+      - observability-net
+    depends_on:
+      - prometheus
+      - tempo
+
+  # ---------------------------------------------------------------------------
+  # 6. Passengers Microservice (.NET 10 Minimal API)
+  # ---------------------------------------------------------------------------
+  passengers:
+    container_name: passengers
+    build:
+      context: ./Passengers
+      dockerfile: Dockerfile
+    ports:
+      - "5001:8080"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=passengers_db
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=passengers_db;Username=postgres;Password=postgres
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OpenTelemetry__OtlpEndpoint=http://otel-collector:4317
+    networks:
+      - observability-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # 7. Checkin Microservice (.NET 10 Minimal API)
+  # ---------------------------------------------------------------------------
+  checkin:
+    container_name: checkin
+    build:
+      context: ./Checkin
+      dockerfile: Dockerfile
+    ports:
+      - "5002:8080"
+    environment:
+      - COUCHBASE_HOST=couchbase
+      - COUCHBASE_USER=Administrator
+      - COUCHBASE_PASSWORD=password
+      - Couchbase__ConnectionString=couchbase://couchbase
+      - Couchbase__Username=Administrator
+      - Couchbase__Password=password
+      - Services__PassengersUrl=http://passengers:8080
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OpenTelemetry__OtlpEndpoint=http://otel-collector:4317
+    networks:
+      - observability-net
+    depends_on:
+      - couchbase
+      - couchbase-init
+      - passengers
+      - otel-collector
