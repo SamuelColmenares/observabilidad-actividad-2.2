@@ -22,6 +22,10 @@ env:
   VM_NAME: ${{ secrets.GCE_VM_NAME }}
   VM_ZONE: ${{ secrets.GCE_VM_ZONE }}
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   deploy-infrastructure:
     name: Deploy Infrastructure to GCE VM

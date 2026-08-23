@@ -24,6 +24,10 @@ env:
   ARTIFACT_REGISTRY: us-central1-docker.pkg.dev
   IMAGE_NAME: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/actividad-2-2/passengers
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   # ── Job 1: Build and push Docker image ──────────────────────────────────────
   build-and-push:
