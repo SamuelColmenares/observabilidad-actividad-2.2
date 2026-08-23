@@ -39,7 +39,7 @@ spec:
             - containerPort: 8889
               name: metrics-apps
             - containerPort: 8888
-              name: metrics-internal
+              name: metrics-int
           resources:
             requests:
               cpu: 100m
@@ -87,7 +87,7 @@ spec:
     - name: metrics-apps
       port: 8889
       targetPort: 8889
-    - name: metrics-internal
+    - name: metrics-int
       port: 8888
       targetPort: 8888
   type: LoadBalancer
