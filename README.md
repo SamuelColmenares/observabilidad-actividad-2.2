@@ -333,25 +333,27 @@ gcloud compute instances create ${VM_NAME} \
 
 # Crear regla de firewall para los puertos de los servicios
 # NOTA: Solo para uso educativo. En producción, restringir source-ranges.
-gcloud compute firewall-rules create allow-observability-services \
-  --allow=tcp:5432,tcp:8091,tcp:8092,tcp:8093,tcp:11210,tcp:4317,tcp:4318,tcp:8889,tcp:9090,tcp:3000,tcp:3200 \
-  --target-tags=observability-server \
-  --source-ranges="0.0.0.0/0" \
-  --description="Allow observability service ports (educational only)" \
-  --project=${PROJECT_ID}
 
-# Instalar Docker en la VM
-gcloud compute ssh ${VM_NAME} --zone=${VM_ZONE} --command="
-  sudo apt-get update -qq &&
-  sudo apt-get install -y ca-certificates curl &&
-  sudo install -m 0755 -d /etc/apt/keyrings &&
-  sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc &&
-  sudo chmod a+r /etc/apt/keyrings/docker.asc &&
-  echo 'deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \$(. /etc/os-release && echo \"\$VERSION_CODENAME\") stable' | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null &&
-  sudo apt-get update -qq &&
-  sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin &&
-  sudo usermod -aG docker \$USER
-"
+# PowerShell: el valor de --allow DEBE ir entre comillas (las comas son separadores de array en PS)
+gcloud compute firewall-rules create allow-observability-services `
+  --allow="tcp:5432,tcp:8091,tcp:8092,tcp:8093,tcp:11210,tcp:4317,tcp:4318,tcp:8889,tcp:9090,tcp:3000,tcp:3200" `
+  --target-tags=observability-server `
+  --source-ranges=0.0.0.0/0 `
+  --description="Allow observability service ports (educational only)" `
+  --project=$env:PROJECT_ID
+
+# bash / Cloud Shell (alternativa):
+# gcloud compute firewall-rules create allow-observability-services \
+#   --allow="tcp:5432,tcp:8091,tcp:8092,tcp:8093,tcp:11210,tcp:4317,tcp:4318,tcp:8889,tcp:9090,tcp:3000,tcp:3200" \
+#   --target-tags=observability-server --source-ranges=0.0.0.0/0 \
+#   --project=${PROJECT_ID}
+
+# Instalar Docker en la VM (Método oficial y seguro)
+# Ejecutar vía SSH desde tu máquina local (reemplazar VM_NAME y VM_ZONE o usar variables):
+gcloud compute ssh observability-vm --zone=us-central1-a --command="curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker \$USER"
+
+# O si ya estás conectado por SSH dentro de la VM, simplemente corre:
+# curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker $USER
 
 # Obtener la IP pública de la VM (guardar como secret GCE_VM_EXTERNAL_IP)
 gcloud compute instances describe ${VM_NAME} \

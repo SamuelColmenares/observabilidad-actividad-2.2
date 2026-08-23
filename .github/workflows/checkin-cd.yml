@@ -43,10 +43,12 @@ jobs:
 
       # ── 2. Authenticate with GCP via Workload Identity Federation ───────────
       - name: Authenticate with Google Cloud
+        id: auth
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
 
       # ── 3. Setup gcloud CLI ────────────────────────────────────────────────
       - name: Set up Cloud SDK
@@ -90,10 +92,12 @@ jobs:
     steps:
       # ── 1. Authenticate with GCP ───────────────────────────────────────────
       - name: Authenticate with Google Cloud
+        id: auth
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
 
       # ── 2. Setup gcloud CLI ────────────────────────────────────────────────
       - name: Set up Cloud SDK
