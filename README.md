@@ -49,11 +49,18 @@ La arquitectura está compuesta por contenedores interconectados mediante una re
 ### Requisitos
 - Docker Engine y Docker Compose instalados.
 
-### 1. Iniciar todos los servicios
-Desde la raíz del repositorio (`actividad-2.2`), ejecuta:
+### 🧪 Ejecutar Pruebas Unitarias
+Ambos microservicios incluyen proyectos de pruebas unitarias desarrollados con **xUnit**, **Moq** y **EF Core In-Memory**:
 
 ```bash
-docker-compose up -d --build
+# Ejecutar pruebas unitarias de Passengers.Tests
+dotnet test Passengers.Tests/Passengers.Tests.csproj
+
+# Ejecutar pruebas unitarias de Checkin.Tests
+dotnet test Checkin.Tests/Checkin.Tests.csproj
+
+# Ejecutar todas las pruebas unitarias de la solución
+dotnet test
 ```
 
 > Los valores por defecto están embebidos en `docker-compose.yml`. No se requiere ningún archivo `.env` para desarrollo local.  
@@ -120,10 +127,10 @@ docker-compose ps
 | Archivo | Trigger | Descripción |
 | :--- | :--- | :--- |
 | `prerequisites.yml` | push a `main` con cambios en `config/**`, `init-couchbase.sh` o `docker-compose.yml`; también manual (`workflow_dispatch`) | Despliega/actualiza PostgreSQL, Couchbase (+ init), OTel Collector, Tempo, Prometheus y Grafana en una VM de GCE vía SSH |
-| `passengers-ci.yml` | push / PR a `main` con cambios en `Passengers/**` | Restaura dependencias, compila y corre pruebas unitarias del servicio Passengers |
-| `passengers-cd.yml` | `workflow_run` al completar `Passengers CI` con éxito | Construye y publica imagen Docker a Artifact Registry; despliega a Cloud Run |
-| `checkin-ci.yml` | push / PR a `main` con cambios en `Checkin/**` | Restaura dependencias, compila y corre pruebas unitarias del servicio Checkin |
-| `checkin-cd.yml` | `workflow_run` al completar `Checkin CI` con éxito | Construye y publica imagen Docker a Artifact Registry; despliega a Cloud Run |
+| `passengers-ci.yml` | push / PR a `main` con cambios en `Passengers/**` o `Passengers.Tests/**` | Restaura dependencias, compila y corre pruebas unitarias del servicio Passengers |
+| `passengers-cd.yml` | `workflow_run` al completar `Passengers CI` con éxito; también manual (`workflow_dispatch`) | Construye y publica imagen Docker a Artifact Registry; despliega a Cloud Run |
+| `checkin-ci.yml` | push / PR a `main` con cambios en `Checkin/**` o `Checkin.Tests/**` | Restaura dependencias, compila y corre pruebas unitarias del servicio Checkin |
+| `checkin-cd.yml` | `workflow_run` al completar `Checkin CI` con éxito; también manual (`workflow_dispatch`) | Construye y publica imagen Docker a Artifact Registry; despliega a Cloud Run |
 
 ### Orden de Ejecución Obligatorio
 
@@ -419,10 +426,10 @@ gcloud projects add-iam-policy-binding ${PROJECT_ID} \
   --member="serviceAccount:${SA_EMAIL}" \
   --role="roles/iam.serviceAccountUser"
 
-# SSH a la VM via OS Login
+# SSH a la VM via OS Login (Admin sin contraseña)
 gcloud projects add-iam-policy-binding ${PROJECT_ID} \
   --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/compute.osLogin"
+  --role="roles/compute.osAdminLogin"
 
 # Leer metadata de instancias de Compute Engine
 gcloud projects add-iam-policy-binding ${PROJECT_ID} \

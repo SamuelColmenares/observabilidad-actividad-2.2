@@ -16,6 +16,7 @@ on:
     workflows: ["Passengers CI"]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -33,8 +34,8 @@ jobs:
   build-and-push:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
-    # Only proceed if the CI workflow succeeded
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Proceed if triggered manually or if CI workflow succeeded
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}

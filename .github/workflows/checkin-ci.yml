@@ -1,7 +1,7 @@
 # =============================================================================
 # Checkin CI — Build & Test
 #
-# Triggers on push or PR to main when Checkin source files change.
+# Triggers on push or PR to main when Checkin source or test files change.
 # CD workflow depends on successful completion of this workflow.
 # =============================================================================
 
@@ -12,10 +12,13 @@ on:
     branches: [main]
     paths:
       - 'Checkin/**'
+      - 'Checkin.Tests/**'
   pull_request:
     branches: [main]
     paths:
       - 'Checkin/**'
+      - 'Checkin.Tests/**'
+  workflow_dispatch:
 
 jobs:
   build-and-test:
@@ -35,22 +38,19 @@ jobs:
 
       # ── 3. Restore dependencies ───────────────────────────────────────────────
       - name: Restore dependencies
-        run: dotnet restore Checkin/Checkin.csproj
+        run: |
+          dotnet restore Checkin/Checkin.csproj
+          dotnet restore Checkin.Tests/Checkin.Tests.csproj
 
       # ── 4. Build ─────────────────────────────────────────────────────────────
-      - name: Build solution
-        run: dotnet build Checkin/Checkin.csproj --no-restore -c Release
+      - name: Build solution and tests
+        run: |
+          dotnet build Checkin/Checkin.csproj --no-restore -c Release
+          dotnet build Checkin.Tests/Checkin.Tests.csproj --no-restore -c Release
 
       # ── 5. Run unit tests ────────────────────────────────────────────────────
-      # Discovers any *Tests.csproj projects inside the Checkin/ directory tree.
       - name: Run unit tests
-        run: |
-          TEST_PROJECTS=$(find Checkin -name '*Tests.csproj' -o -name '*Test.csproj' 2>/dev/null)
-          if [ -n "$TEST_PROJECTS" ]; then
-            echo "$TEST_PROJECTS" | xargs -I{} dotnet test {} --no-build -c Release --logger "trx;LogFileName=test-results.trx" --results-directory ./test-results
-          else
-            echo "No test projects found in Checkin/. Skipping test step."
-          fi
+        run: dotnet test Checkin.Tests/Checkin.Tests.csproj --no-build -c Release --logger "trx;LogFileName=test-results.trx" --results-directory ./test-results
 
       # ── 6. Upload test results (optional, visible in Actions UI) ─────────────
       - name: Upload test results
