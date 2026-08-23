@@ -1,41 +1,81 @@
 # =============================================================================
-# Passengers CD — Build Image & Deploy to Cloud Run
-#
-# Triggered automatically when the "Passengers CI" workflow succeeds on main.
-# Requires: prerequisites workflow must have run at least once beforehand.
-#
-# Cloud Run env vars point to the GCE VM for PostgreSQL and OTel Collector.
-# NOTE: Deploy Passengers FIRST. After first deploy, add the Cloud Run URL
-#       to the GitHub secret PASSENGERS_SERVICE_URL used by Checkin CD.
+# Checkin CI/CD — Build, Test & Deploy to Cloud Run
 # =============================================================================
 
-name: Passengers CD
+name: Checkin CI/CD
 
 on:
-  workflow_run:
-    workflows: ["Passengers CI"]
-    types: [completed]
+  push:
     branches: [main]
+    paths:
+      - 'Checkin/**'
+      - 'Checkin.Tests/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Checkin/**'
+      - 'Checkin.Tests/**'
   workflow_dispatch:
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   REGION: us-central1
-  SERVICE_NAME: passengers-service
+  SERVICE_NAME: checkin-service
   ARTIFACT_REGISTRY: us-central1-docker.pkg.dev
-  IMAGE_NAME: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/actividad-2-2/passengers
+  IMAGE_NAME: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/actividad-2-2/checkin
 
 permissions:
   contents: read
   id-token: write
 
 jobs:
-  # ── Job 1: Build and push Docker image ──────────────────────────────────────
+  # ── Job 1: Build & Test (CI) ────────────────────────────────────────────────
+  build-and-test:
+    name: Build and Test Checkin Service
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Setup .NET 10 ─────────────────────────────────────────────────────
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # ── 3. Restore dependencies ───────────────────────────────────────────────
+      - name: Restore dependencies
+        run: |
+          dotnet restore Checkin/Checkin.csproj
+          dotnet restore Checkin.Tests/Checkin.Tests.csproj
+
+      # ── 4. Build ─────────────────────────────────────────────────────────────
+      - name: Build solution and tests
+        run: |
+          dotnet build Checkin/Checkin.csproj --no-restore -c Release
+          dotnet build Checkin.Tests/Checkin.Tests.csproj --no-restore -c Release
+
+      # ── 5. Run unit tests ────────────────────────────────────────────────────
+      - name: Run unit tests
+        run: dotnet test Checkin.Tests/Checkin.Tests.csproj --no-build -c Release --logger "trx;LogFileName=test-results.trx" --results-directory ./test-results
+
+      # ── 6. Upload test results (optional, visible in Actions UI) ─────────────
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checkin-test-results
+          path: test-results/
+          retention-days: 7
+
+  # ── Job 2: Build & Push Docker Image (CD) ───────────────────────────────────
   build-and-push:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
-    # Proceed if triggered manually or if CI workflow succeeded
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
 
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
@@ -44,8 +84,6 @@ jobs:
       # ── 1. Checkout ────────────────────────────────────────────────────────
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       # ── 2. Authenticate with GCP via Workload Identity Federation ───────────
       - name: Authenticate with Google Cloud
@@ -70,7 +108,7 @@ jobs:
       - name: Set image tag
         id: meta
         run: |
-          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           echo "image_tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "Image will be tagged: ${{ env.IMAGE_NAME }}:${SHORT_SHA}"
 
@@ -82,18 +120,19 @@ jobs:
           docker build \
             -t ${{ env.IMAGE_NAME }}:${IMAGE_TAG} \
             -t ${{ env.IMAGE_NAME }}:latest \
-            ./Passengers
+            ./Checkin
 
           docker push ${{ env.IMAGE_NAME }}:${IMAGE_TAG}
           docker push ${{ env.IMAGE_NAME }}:latest
 
           echo "Pushed: ${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
 
-  # ── Job 2: Deploy to Cloud Run ───────────────────────────────────────────────
+  # ── Job 3: Deploy to Cloud Run (CD) ──────────────────────────────────────────
   deploy-cloud-run:
     name: Deploy to Cloud Run
     runs-on: ubuntu-latest
     needs: build-and-push
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
 
     steps:
       # ── 1. Authenticate with GCP ───────────────────────────────────────────
@@ -112,8 +151,7 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
 
       # ── 3. Deploy to Cloud Run ─────────────────────────────────────────────
-      # Env vars override appsettings.json. PostgreSQL and OTel point to GCE VM.
-      - name: Deploy Passengers to Cloud Run
+      - name: Deploy Checkin to Cloud Run
         run: |
           IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}
 
@@ -128,11 +166,10 @@ jobs:
             --min-instances=0 \
             --max-instances=3 \
             --set-env-vars="
-              ConnectionStrings__DefaultConnection=Host=${{ secrets.GCE_VM_EXTERNAL_IP }};Port=5432;Database=${{ secrets.POSTGRES_DB }};Username=${{ secrets.POSTGRES_USER }};Password=${{ secrets.POSTGRES_PASSWORD }},
-              POSTGRES_HOST=${{ secrets.GCE_VM_EXTERNAL_IP }},
-              POSTGRES_USER=${{ secrets.POSTGRES_USER }},
-              POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }},
-              POSTGRES_DB=${{ secrets.POSTGRES_DB }},
+              Couchbase__ConnectionString=couchbase://${{ secrets.GCE_VM_EXTERNAL_IP }},
+              Couchbase__Username=${{ secrets.CB_ADMIN_USER }},
+              Couchbase__Password=${{ secrets.CB_ADMIN_PASSWORD }},
+              Services__PassengersUrl=${{ secrets.PASSENGERS_SERVICE_URL }},
               OpenTelemetry__OtlpEndpoint=http://${{ secrets.GCE_VM_EXTERNAL_IP }}:4317,
               OTEL_EXPORTER_OTLP_ENDPOINT=http://${{ secrets.GCE_VM_EXTERNAL_IP }}:4317
             " \
@@ -144,11 +181,7 @@ jobs:
           SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
             --region=${{ env.REGION }} \
             --format='value(status.url)')
-          echo "✅ Passengers service deployed: ${SERVICE_URL}"
-          echo ""
-          echo "⚡ ACTION REQUIRED (first deploy only):"
-          echo "   Add/update GitHub secret PASSENGERS_SERVICE_URL = ${SERVICE_URL}"
-          echo "   This URL is needed by the Checkin CD workflow."
+          echo "✅ Checkin service deployed: ${SERVICE_URL}"
           echo "SERVICE_URL=${SERVICE_URL}" >> $GITHUB_STEP_SUMMARY
 
       # ── 5. Smoke test ──────────────────────────────────────────────────────

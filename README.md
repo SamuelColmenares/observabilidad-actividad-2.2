@@ -102,45 +102,37 @@ docker-compose ps
 │  └─────────────────────────────┘                                                 │
 │                                                                                  │
 │  Cambios en Passengers/**          Cambios en Checkin/**                         │
+│  o Passengers.Tests/**             o Checkin.Tests/**                            │
 │       │                                    │                                     │
 │       ▼                                    ▼                                     │
-│  ┌──────────────┐                ┌──────────────────┐                            │
-│  │ passengers   │                │   checkin-ci.yml │                            │
-│  │ -ci.yml      │                │   Build & Test   │                            │
-│  │ Build & Test │                └────────┬─────────┘                            │
-│  └──────┬───────┘                         │ (on success)                         │
-│         │ (on success)                    ▼                                      │
-│         ▼                       ┌──────────────────┐                             │
-│  ┌──────────────────┐           │ checkin-cd.yml   │                             │
-│  │ passengers-cd.yml│           │ 1. Build & Push  │──► Artifact Registry        │
-│  │ 1. Build & Push  │──────────►│    Docker Image  │                             │
-│  │    Docker Image  │           │ 2. Deploy to     │──► Cloud Run                │
-│  │ 2. Deploy to     │           │    Cloud Run     │    (Couchbase → GCE VM)     │
-│  │    Cloud Run     │           └──────────────────┘                             │
-│  │    (PG → GCE VM) │                                                            │
+│  ┌──────────────────┐           ┌──────────────────┐                             │
+│  │ passengers.yml   │           │ checkin.yml      │                             │
+│  │ 1. Build & Test  │           │ 1. Build & Test  │                             │
+│  │ 2. Build & Push  │──────────►│ 2. Build & Push  │──► Artifact Registry        │
+│  │ 3. Deploy to     │           │ 3. Deploy to     │──► Cloud Run                │
+│  │    Cloud Run     │           │    Cloud Run     │    (Couchbase/OTel → VM)    │
+│  │    (PG/OTel → VM)│           └──────────────────┘                             │
 │  └──────────────────┘                                                            │
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Descripción de los Workflows
 
-| Archivo | Trigger | Descripción |
-| :--- | :--- | :--- |
-| `prerequisites.yml` | push a `main` con cambios en `config/**`, `init-couchbase.sh` o `docker-compose.yml`; también manual (`workflow_dispatch`) | Despliega/actualiza PostgreSQL, Couchbase (+ init), OTel Collector, Tempo, Prometheus y Grafana en una VM de GCE vía SSH |
-| `passengers-ci.yml` | push / PR a `main` con cambios en `Passengers/**` o `Passengers.Tests/**` | Restaura dependencias, compila y corre pruebas unitarias del servicio Passengers |
-| `passengers-cd.yml` | `workflow_run` al completar `Passengers CI` con éxito; también manual (`workflow_dispatch`) | Construye y publica imagen Docker a Artifact Registry; despliega a Cloud Run |
-| `checkin-ci.yml` | push / PR a `main` con cambios en `Checkin/**` o `Checkin.Tests/**` | Restaura dependencias, compila y corre pruebas unitarias del servicio Checkin |
-| `checkin-cd.yml` | `workflow_run` al completar `Checkin CI` con éxito; también manual (`workflow_dispatch`) | Construye y publica imagen Docker a Artifact Registry; despliega a Cloud Run |
+| Archivo | Trigger | Jobs Incluidos | Descripción |
+| :--- | :--- | :--- | :--- |
+| `prerequisites.yml` | push a `main` en `config/**`, `init-couchbase.sh`, `docker-compose.yml`; o manual (`workflow_dispatch`) | `deploy-infrastructure` | Despliega/actualiza PostgreSQL, Couchbase (+ init), OTel Collector, Tempo, Prometheus y Grafana en una VM de GCE vía SSH |
+| `passengers.yml` | push / PR a `main` en `Passengers/**` o `Passengers.Tests/**`; o manual (`workflow_dispatch`) | `build-and-test` (CI)<br>`build-and-push` (CD)<br>`deploy-cloud-run` (CD) | Compila y corre UTs del servicio Passengers. Si pasa CI y es `main`, compila Docker, sube a Artifact Registry y despliega a Cloud Run |
+| `checkin.yml` | push / PR a `main` en `Checkin/**` o `Checkin.Tests/**`; o manual (`workflow_dispatch`) | `build-and-test` (CI)<br>`build-and-push` (CD)<br>`deploy-cloud-run` (CD) | Compila y corre UTs del servicio Checkin. Si pasa CI y es `main`, compila Docker, sube a Artifact Registry y despliega a Cloud Run |
 
-### Orden de Ejecución Obligatorio
+### Orden de Ejecución Obligatorio (Primera Vez)
 
 ```
 1. prerequisites.yml        ← SIEMPRE primero (al menos una vez)
-2. passengers-cd.yml        ← Segundo (Checkin depende de la URL de Passengers)
-3. checkin-cd.yml           ← Tercero
+2. passengers.yml           ← Segundo (Checkin depende de la URL de Passengers)
+3. checkin.yml              ← Tercero
 ```
 
-> **Primera vez:** Después de que `passengers-cd.yml` termine, copia la URL del servicio Cloud Run mostrada en el Step Summary y agrégala como secret `PASSENGERS_SERVICE_URL`. Esto es necesario solo una vez.
+> **Primera vez:** Después de que `passengers.yml` despliegue con éxito, copia la URL del servicio Cloud Run mostrada en el Step Summary y agrégala como secret `PASSENGERS_SERVICE_URL`. Esto es necesario solo una vez.
 
 ---
 
