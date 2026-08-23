@@ -170,8 +170,8 @@ jobs:
               Couchbase__Username=${{ secrets.CB_ADMIN_USER }},
               Couchbase__Password=${{ secrets.CB_ADMIN_PASSWORD }},
               Services__PassengersUrl=${{ secrets.PASSENGERS_SERVICE_URL }},
-              OpenTelemetry__OtlpEndpoint=http://${{ secrets.GCE_VM_EXTERNAL_IP }}:4317,
-              OTEL_EXPORTER_OTLP_ENDPOINT=http://${{ secrets.GCE_VM_EXTERNAL_IP }}:4317
+              OpenTelemetry__OtlpEndpoint=${{ secrets.OTEL_COLLECTOR_ENDPOINT }},
+              OTEL_EXPORTER_OTLP_ENDPOINT=${{ secrets.OTEL_COLLECTOR_ENDPOINT }}
             " \
             --quiet
 

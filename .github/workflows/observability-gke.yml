@@ -1,0 +1,154 @@
+# =============================================================================
+# Observability GKE Workflow — Deploy OTel Collector + Jaeger + Prometheus +
+# Grafana to a GKE Autopilot cluster.
+#
+# Reemplaza la parte de "observabilidad" que antes vivía en la VM de GCE
+# (prerequisites.yml). Postgres y Couchbase se quedan en la VM sin cambios.
+#
+# Runs when k8s/gcp/** changes on main, or on demand.
+# =============================================================================
+
+name: Deploy Observability Stack to GKE
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'k8s/gcp/**'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  CLUSTER_NAME: ${{ secrets.GKE_CLUSTER_NAME }}
+  CLUSTER_REGION: ${{ secrets.GKE_CLUSTER_REGION }}
+  NAMESPACE: observability
+  GRAFANA_GSA_NAME: grafana-cloudlogging-sa
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-observability:
+    name: Deploy Observability Stack to GKE Autopilot
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Authenticate with GCP via Workload Identity Federation ───────────
+      - name: Authenticate with Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      # ── 3. Setup gcloud CLI + gke-gcloud-auth-plugin (requerido por kubectl) ─
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          install_components: gke-gcloud-auth-plugin
+
+      # ── 4. Enable required APIs (idempotente) ────────────────────────────────
+      - name: Enable required GCP APIs
+        run: |
+          gcloud services enable \
+            container.googleapis.com \
+            cloudresourcemanager.googleapis.com \
+            --project=${{ env.PROJECT_ID }}
+
+      # ── 5. Create GKE Autopilot cluster if it doesn't exist (idempotente) ────
+      - name: Ensure GKE Autopilot cluster exists
+        run: |
+          gcloud container clusters describe ${{ env.CLUSTER_NAME }} \
+            --region=${{ env.CLUSTER_REGION }} \
+            --project=${{ env.PROJECT_ID }} > /dev/null 2>&1 || \
+          gcloud container clusters create-auto ${{ env.CLUSTER_NAME }} \
+            --region=${{ env.CLUSTER_REGION }} \
+            --project=${{ env.PROJECT_ID }}
+
+      # ── 6. Fetch cluster credentials for kubectl ─────────────────────────────
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ env.CLUSTER_NAME }} \
+            --region=${{ env.CLUSTER_REGION }} \
+            --project=${{ env.PROJECT_ID }}
+
+      # ── 7. Ensure Grafana's GCP Service Account + Workload Identity binding ──
+      - name: Ensure Grafana Cloud Logging service account
+        run: |
+          GSA_EMAIL="${{ env.GRAFANA_GSA_NAME }}@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
+
+          gcloud iam service-accounts describe "$GSA_EMAIL" \
+            --project=${{ env.PROJECT_ID }} > /dev/null 2>&1 || \
+          gcloud iam service-accounts create ${{ env.GRAFANA_GSA_NAME }} \
+            --project=${{ env.PROJECT_ID }} \
+            --display-name="Grafana Cloud Logging reader"
+
+          gcloud projects add-iam-policy-binding ${{ env.PROJECT_ID }} \
+            --member="serviceAccount:${GSA_EMAIL}" \
+            --role="roles/logging.viewer" \
+            --condition=None
+
+          gcloud iam service-accounts add-iam-policy-binding "$GSA_EMAIL" \
+            --project=${{ env.PROJECT_ID }} \
+            --role="roles/iam.workloadIdentityUser" \
+            --member="serviceAccount:${{ env.PROJECT_ID }}.svc.id.goog[${{ env.NAMESPACE }}/grafana-ksa]"
+
+          echo "GSA_EMAIL=${GSA_EMAIL}" >> $GITHUB_ENV
+
+      # ── 8. Render manifests (sustituye placeholders) ─────────────────────────
+      - name: Render Kubernetes manifests
+        run: |
+          mkdir -p /tmp/k8s-gcp-rendered
+          for f in k8s/gcp/*.yaml; do
+            sed \
+              -e "s/GCP_PROJECT_ID_PLACEHOLDER/${{ env.PROJECT_ID }}/g" \
+              -e "s/GRAFANA_GSA_EMAIL_PLACEHOLDER/${{ env.GSA_EMAIL }}/g" \
+              "$f" > "/tmp/k8s-gcp-rendered/$(basename "$f")"
+          done
+
+      # ── 9. Apply namespace + Grafana admin Secret (idempotente) ──────────────
+      - name: Apply namespace and Grafana admin secret
+        run: |
+          kubectl apply -f /tmp/k8s-gcp-rendered/00-namespace.yaml
+
+          kubectl create secret generic grafana-admin-credentials \
+            --namespace=${{ env.NAMESPACE }} \
+            --from-literal=admin-password='${{ secrets.GF_ADMIN_PASSWORD }}' \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # ── 10. Apply the rest of the observability stack ────────────────────────
+      - name: Apply observability stack
+        run: |
+          kubectl apply -f /tmp/k8s-gcp-rendered/
+
+      # ── 11. Wait for LoadBalancer external IPs and print endpoints ───────────
+      - name: Print service endpoints
+        run: |
+          echo "Waiting up to 180s for external IPs to be assigned..."
+          for svc in otel-collector jaeger grafana; do
+            for i in $(seq 1 18); do
+              IP=$(kubectl get svc "$svc" -n ${{ env.NAMESPACE }} \
+                -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+              if [ -n "$IP" ]; then break; fi
+              sleep 10
+            done
+            echo "${svc}_IP=${IP:-<pending>}" | tee -a $GITHUB_STEP_SUMMARY
+          done
+
+          echo ""
+          echo "⚡ ACTION REQUIRED (first deploy only):"
+          echo "   Add/update GitHub secret OTEL_COLLECTOR_ENDPOINT = http://<otel-collector_IP>:4317"
+          echo "   Used by passengers.yml / checkin.yml to send OTLP traffic to the Collector in GKE."
+
+      # ── 12. Health check ──────────────────────────────────────────────────────
+      - name: Verify observability stack health
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }} -o wide
+          kubectl get svc -n ${{ env.NAMESPACE }}

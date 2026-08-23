@@ -9,11 +9,13 @@ datasources:
     jsonData:
       timeInterval: 5s
 
-  - name: Tempo
-    type: tempo
+  - name: Jaeger
+    type: jaeger
     access: proxy
-    url: http://tempo:3200
+    url: http://jaeger:16686
     jsonData:
-      httpMethod: GET
-      serviceMap:
-        datasourceUid: 'Prometheus'
+      tracesToLogsV2:
+        datasourceUid: ''
+      spanBar:
+        type: 'Tag'
+        tag: 'http.status_code'

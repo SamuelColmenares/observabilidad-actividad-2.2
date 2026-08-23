@@ -1,0 +1,95 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# k8s/gcp/05-grafana.yaml — Grafana (ServiceAccount + Deployment + Service)
+#
+# Requisitos previos (documentados en README.md, no ejecutados automáticamente):
+#   1. Crear el Secret con la contraseña de admin:
+#        kubectl create secret generic grafana-admin-credentials \
+#          --namespace observability \
+#          --from-literal=admin-password='<valor-del-secret-GF_ADMIN_PASSWORD>'
+#   2. Sustituir GRAFANA_GSA_EMAIL_PLACEHOLDER por el correo de la Service
+#      Account de GCP con rol roles/logging.viewer (ver README.md, sección
+#      "Plugin de Google Cloud Logging en Grafana").
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-ksa
+  namespace: observability
+  annotations:
+    # Workload Identity: el pod de Grafana asume esta Service Account de GCP
+    # para leer Cloud Logging sin necesidad de una clave JSON en el repo.
+    iam.gke.io/gcp-service-account: GRAFANA_GSA_EMAIL_PLACEHOLDER
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: observability
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      serviceAccountName: grafana-ksa
+      containers:
+        - name: grafana
+          image: grafana/grafana:latest
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin-credentials
+                  key: admin-password
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            # Instala el plugin oficial de Google Cloud Logging al arrancar.
+            - name: GF_INSTALL_PLUGINS
+              value: "googlecloud-logging-datasource"
+          ports:
+            - containerPort: 3000
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          volumeMounts:
+            - name: grafana-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+      volumes:
+        - name: grafana-datasources
+          configMap:
+            name: grafana-datasources
+
+---
+# type: LoadBalancer — expone la UI de Grafana para el panel de SLIs y
+# Grafana Explore (correlación logs ↔ trazas vía Correlations, ver README.md).
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: observability
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+  type: LoadBalancer

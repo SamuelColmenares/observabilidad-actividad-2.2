@@ -1,0 +1,16 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# k8s/gcp/00-namespace.yaml — Namespace del plano de observabilidad en GKE
+#
+# Aplicar todo el directorio con:
+#   kubectl apply -f k8s/gcp/
+#
+# Contiene: OTel Collector, Jaeger, Prometheus y Grafana.
+# Passengers y Checkin permanecen en Cloud Run (sin cambios de plataforma).
+# PostgreSQL y Couchbase permanecen en la VM de GCE (sin cambios de plataforma).
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    app.kubernetes.io/part-of: actividad-2-2

@@ -171,8 +171,8 @@ jobs:
               POSTGRES_USER=${{ secrets.POSTGRES_USER }},
               POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }},
               POSTGRES_DB=${{ secrets.POSTGRES_DB }},
-              OpenTelemetry__OtlpEndpoint=http://${{ secrets.GCE_VM_EXTERNAL_IP }}:4317,
-              OTEL_EXPORTER_OTLP_ENDPOINT=http://${{ secrets.GCE_VM_EXTERNAL_IP }}:4317
+              OpenTelemetry__OtlpEndpoint=${{ secrets.OTEL_COLLECTOR_ENDPOINT }},
+              OTEL_EXPORTER_OTLP_ENDPOINT=${{ secrets.OTEL_COLLECTOR_ENDPOINT }}
             " \
             --quiet
 

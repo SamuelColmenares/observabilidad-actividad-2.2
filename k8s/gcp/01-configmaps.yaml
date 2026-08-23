@@ -1,0 +1,132 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# k8s/gcp/01-configmaps.yaml — Configuración de Collector, Prometheus y Grafana
+# ═══════════════════════════════════════════════════════════════════════════
+---
+# ── OTel Collector: mismo pipeline que config/otel-collector-config.yaml local,
+# ── más el exporter googlecloud (logs → Cloud Logging) y el project id via env.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: observability
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      # memory_limiter primero: evita que un pico de telemetría agote la memoria
+      # del pod y lo tumbe (un Collector caído es peor que datos perdidos).
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 400
+        spike_limit_mib: 100
+      # resource enriquece todas las señales con atributos del entorno GCP.
+      resource:
+        attributes:
+          - action: insert
+            key: deployment.environment
+            value: production
+          - action: insert
+            key: cloud.provider
+            value: gcp
+      batch:
+        timeout: 5s
+        send_batch_size: 1024
+
+    exporters:
+      otlp/jaeger:
+        endpoint: jaeger.observability.svc.cluster.local:4317
+        tls:
+          insecure: true
+      prometheus:
+        endpoint: 0.0.0.0:8889
+      googlecloud:
+        project: ${env:GCP_PROJECT_ID}
+        log:
+          default_log_name: actividad-2-2-otel
+      debug:
+        verbosity: normal
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlp/jaeger, debug]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [prometheus, debug]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [googlecloud, debug]
+      telemetry:
+        metrics:
+          # Métricas internas del propio Collector (CPU, spans rechazados, etc.)
+          address: 0.0.0.0:8888
+          level: detailed
+
+---
+# ── Prometheus: scrapea el endpoint del Collector expuesto por el Service.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: observability
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    scrape_configs:
+      - job_name: 'otel-collector'
+        static_configs:
+          - targets: ['otel-collector:8889']
+
+      - job_name: 'otel-collector-internal'
+        static_configs:
+          - targets: ['otel-collector:8888']
+
+---
+# ── Grafana: datasources provisionados (Prometheus, Jaeger, Google Cloud Logging).
+# El datasource "Google Cloud Logging" usa authenticationType: gce, es decir,
+# se autentica con la identidad del pod (Workload Identity) — ver 05-grafana.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: observability
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        jsonData:
+          timeInterval: 5s
+
+      - name: Jaeger
+        type: jaeger
+        access: proxy
+        url: http://jaeger:16686
+        jsonData:
+          spanBar:
+            type: 'Tag'
+            tag: 'http.status_code'
+
+      - name: Google Cloud Logging
+        type: googlecloud-logging-datasource
+        access: proxy
+        jsonData:
+          authenticationType: gce

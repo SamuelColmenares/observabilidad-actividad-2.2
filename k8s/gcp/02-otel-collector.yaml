@@ -1,0 +1,93 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# k8s/gcp/02-otel-collector.yaml — OTel Collector (Deployment + Service)
+#
+# NOTA: GCP_PROJECT_ID_PLACEHOLDER es sustituido por el workflow
+# observability-gke.yml antes de `kubectl apply` (ver README.md).
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8888"
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.103.0
+          args: ["--config=/conf/otel-collector-config.yaml"]
+          env:
+            - name: GCP_PROJECT_ID
+              value: "GCP_PROJECT_ID_PLACEHOLDER"
+          ports:
+            - containerPort: 4317
+              name: otlp-grpc
+            - containerPort: 4318
+              name: otlp-http
+            - containerPort: 8889
+              name: metrics-apps
+            - containerPort: 8888
+              name: metrics-internal
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+            limits:
+              cpu: 500m
+              memory: 500Mi # Debe ser mayor que memory_limiter.limit_mib (400Mi)
+          readinessProbe:
+            tcpSocket:
+              port: 4317
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 4317
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          volumeMounts:
+            - name: collector-config
+              mountPath: /conf
+      volumes:
+        - name: collector-config
+          configMap:
+            name: otel-collector-config
+
+---
+# type: LoadBalancer — Passengers/Checkin siguen en Cloud Run (fuera del clúster),
+# por lo que necesitan una IP externa para enviar OTLP. Es el mismo modelo de
+# exposición que ya usaba la VM de GCE (mismo puerto 4317, ahora en GKE).
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: metrics-apps
+      port: 8889
+      targetPort: 8889
+    - name: metrics-internal
+      port: 8888
+      targetPort: 8888
+  type: LoadBalancer

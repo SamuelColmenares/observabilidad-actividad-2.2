@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Console;
 using Npgsql;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
@@ -56,6 +57,7 @@ builder.Services.AddOpenTelemetry()
             .AddMeter("System.Net.Http")
             .AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()
+            .AddRuntimeInstrumentation()
             .AddOtlpExporter((options, readerOptions) =>
             {
                 options.Endpoint = new Uri(otlpEndpoint);
@@ -66,7 +68,8 @@ builder.Services.AddOpenTelemetry()
 
 // 3. Configure OpenTelemetry Logging
 builder.Logging.ClearProviders();
-builder.Logging.AddConsole();
+builder.Logging.AddConsole(options => options.FormatterName = OtelJsonConsoleFormatter.FormatterName)
+    .AddConsoleFormatter<OtelJsonConsoleFormatter, ConsoleFormatterOptions>();
 builder.Logging.AddOpenTelemetry(logging =>
 {
     logging.SetResourceBuilder(resourceBuilder);

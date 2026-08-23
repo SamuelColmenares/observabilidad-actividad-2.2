@@ -1,8 +1,11 @@
 # =============================================================================
-# Prerequisites Workflow — Deploy Infrastructure Containers to GCE VM
+# Prerequisites Workflow — Deploy Database Containers to GCE VM
 #
-# Runs when config files or the init script change on main, or on demand.
-# Starts: PostgreSQL, Couchbase, OTel Collector, Tempo, Prometheus, Grafana
+# Runs when the compose file or the Couchbase init script change on main, or
+# on demand. Starts: PostgreSQL, Couchbase.
+#
+# El plano de observabilidad (OTel Collector, Jaeger, Prometheus, Grafana) ya
+# NO se despliega aquí — ver .github/workflows/observability-gke.yml (GKE Autopilot).
 # VM recommendation: e2-medium (2 vCPU / 4 GB RAM) in us-central1-a
 # =============================================================================
 
@@ -12,7 +15,6 @@ on:
   push:
     branches: [main]
     paths:
-      - 'config/**'
       - 'init-couchbase.sh'
       - 'docker-compose.yml'
   workflow_dispatch: # Allow manual trigger from the Actions UI
@@ -60,7 +62,6 @@ jobs:
           POSTGRES_USER="${{ secrets.POSTGRES_USER }}"
           POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}"
           POSTGRES_DB="${{ secrets.POSTGRES_DB }}"
-          GF_ADMIN_PASSWORD="${{ secrets.GF_ADMIN_PASSWORD }}"
           EOF
 
       # ── 5. Write deployment script ──────────────────────────────────────────
@@ -76,15 +77,15 @@ jobs:
           echo "=== Ensuring Docker network exists ==="
           sudo docker network create observability-net 2>/dev/null || echo "Network 'observability-net' already exists."
 
-          echo "=== Pulling latest infrastructure images ==="
+          echo "=== Pulling latest database images ==="
           sudo docker compose pull --quiet \
-            couchbase postgres otel-collector tempo prometheus grafana
+            couchbase postgres
 
-          echo "=== Starting infrastructure containers ==="
+          echo "=== Starting database containers ==="
           # Named volumes ensure data persistence across updates.
           # Docker Compose automatically loads .env in current directory.
           sudo docker compose up -d \
-            couchbase postgres otel-collector tempo prometheus grafana
+            couchbase postgres
 
           echo "=== Waiting 35s for Couchbase cluster to initialize ==="
           sleep 35
@@ -104,19 +105,11 @@ jobs:
           gcloud compute ssh ${{ env.VM_NAME }} \
             --zone=${{ env.VM_ZONE }} \
             --quiet \
-            --command="mkdir -p ~/observability/config"
+            --command="mkdir -p ~/observability"
 
       # ── 7. Copy files to VM ─────────────────────────────────────────────────
       - name: Copy configuration files to VM
         run: |
-          # Copy observability config folder
-          gcloud compute scp \
-            --zone=${{ env.VM_ZONE }} \
-            --recurse \
-            --quiet \
-            config/ \
-            ${{ env.VM_NAME }}:~/observability/
-
           # Copy docker-compose and init script
           gcloud compute scp \
             --zone=${{ env.VM_ZONE }} \
