@@ -23,8 +23,8 @@ services:
       - "8093:8093" # N1QL Query service
       - "11210:11210" # Data / Memcached port
     environment:
-      - COUCHBASE_USER=Administrator
-      - COUCHBASE_PASSWORD=password
+      - COUCHBASE_USER=${CB_ADMIN_USER:-Administrator}
+      - COUCHBASE_PASSWORD=${CB_ADMIN_PASSWORD:-password}
     volumes:
       - couchbase_data:/opt/couchbase/var
     networks:
@@ -38,6 +38,9 @@ services:
     image: couchbase:community
     depends_on:
       - couchbase
+    environment:
+      - CB_ADMIN_USER=${CB_ADMIN_USER:-Administrator}
+      - CB_ADMIN_PASSWORD=${CB_ADMIN_PASSWORD:-password}
     volumes:
       - ./init-couchbase.sh:/init-couchbase.sh
     entrypoint: ["/bin/sh", "/init-couchbase.sh"]
@@ -53,11 +56,11 @@ services:
     ports:
       - "5432:5432"
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=passengers_db
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-passengers_db}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d passengers_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-passengers_db}"]
       interval: 3s
       timeout: 5s
       retries: 5
@@ -74,7 +77,7 @@ services:
     image: otel/opentelemetry-collector-contrib:latest
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      - ./config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
     ports:
       - "4317:4317" # OTLP gRPC receiver
       - "4318:4318" # OTLP HTTP receiver
@@ -89,7 +92,7 @@ services:
     container_name: prometheus
     image: prom/prometheus:latest
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
       - "9090:9090"
     networks:
@@ -105,7 +108,7 @@ services:
     image: grafana/tempo:2.4.1
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
-      - ./tempo-config.yaml:/etc/tempo.yaml
+      - ./config/tempo-config.yaml:/etc/tempo.yaml
     ports:
       - "3200:3200" # Tempo HTTP GUI / API
     networks:
@@ -120,10 +123,10 @@ services:
     ports:
       - "3000:3000" # Grafana UI
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-admin}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
-      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./config/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
     networks:
       - observability-net
     depends_on:
@@ -142,10 +145,10 @@ services:
       - "5001:8080"
     environment:
       - POSTGRES_HOST=postgres
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=passengers_db
-      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=passengers_db;Username=postgres;Password=postgres
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-passengers_db}
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-passengers_db};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OpenTelemetry__OtlpEndpoint=http://otel-collector:4317
     networks:
@@ -168,11 +171,11 @@ services:
       - "5002:8080"
     environment:
       - COUCHBASE_HOST=couchbase
-      - COUCHBASE_USER=Administrator
-      - COUCHBASE_PASSWORD=password
+      - COUCHBASE_USER=${CB_ADMIN_USER:-Administrator}
+      - COUCHBASE_PASSWORD=${CB_ADMIN_PASSWORD:-password}
       - Couchbase__ConnectionString=couchbase://couchbase
-      - Couchbase__Username=Administrator
-      - Couchbase__Password=password
+      - Couchbase__Username=${CB_ADMIN_USER:-Administrator}
+      - Couchbase__Password=${CB_ADMIN_PASSWORD:-password}
       - Services__PassengersUrl=http://passengers:8080
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OpenTelemetry__OtlpEndpoint=http://otel-collector:4317

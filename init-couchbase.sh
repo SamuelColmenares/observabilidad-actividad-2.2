@@ -4,6 +4,13 @@ echo "===================================================="
 echo " Starting Couchbase Auto-Initialization Script"
 echo "===================================================="
 
+# Read credentials from environment variables (injected via GitHub Secrets in CI/CD)
+# Falls back to defaults for local docker-compose usage
+CB_ADMIN_USER="${CB_ADMIN_USER:-Administrator}"
+CB_ADMIN_PASSWORD="${CB_ADMIN_PASSWORD:-password}"
+
+echo "Using Couchbase admin user: ${CB_ADMIN_USER}"
+
 # Helper function to check if Couchbase HTTP port is up
 wait_for_couchbase() {
     echo "Waiting for Couchbase Server (couchbase:8091) to start..."
@@ -39,8 +46,8 @@ echo "Attempting cluster initialization with couchbase-cli..."
 # 1. Initialize cluster 'airline'
 $CLI cluster-init -c couchbase:8091 \
     --cluster-name airline \
-    --cluster-username Administrator \
-    --cluster-password password \
+    --cluster-username "${CB_ADMIN_USER}" \
+    --cluster-password "${CB_ADMIN_PASSWORD}" \
     --cluster-ramsize 512 \
     --cluster-index-ramsize 256 \
     --services data,index,query || echo "Notice: cluster-init returned non-zero (cluster may already be initialized)."
@@ -50,7 +57,7 @@ sleep 3
 # 2. Create bucket 'checkin_bucket'
 echo "Attempting to create bucket 'checkin_bucket'..."
 $CLI bucket-create -c couchbase:8091 \
-    -u Administrator -p password \
+    -u "${CB_ADMIN_USER}" -p "${CB_ADMIN_PASSWORD}" \
     --bucket checkin_bucket \
     --bucket-type couchbase \
     --bucket-ramsize 256 \
@@ -59,6 +66,6 @@ $CLI bucket-create -c couchbase:8091 \
 echo "===================================================="
 echo " Couchbase Auto-Initialization Completed Successfully!"
 echo " Cluster: airline"
-echo " User: Administrator"
+echo " User: ${CB_ADMIN_USER}"
 echo " Bucket: checkin_bucket"
 echo "===================================================="

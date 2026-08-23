@@ -1,0 +1,167 @@
+# =============================================================================
+# Prerequisites Workflow — Deploy Infrastructure Containers to GCE VM
+#
+# Runs when config files or the init script change on main, or on demand.
+# Starts: PostgreSQL, Couchbase, OTel Collector, Tempo, Prometheus, Grafana
+# VM recommendation: e2-medium (2 vCPU / 4 GB RAM) in us-central1-a
+# =============================================================================
+
+name: Deploy Infrastructure Prerequisites
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'config/**'
+      - 'init-couchbase.sh'
+      - 'docker-compose.yml'
+  workflow_dispatch: # Allow manual trigger from the Actions UI
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  VM_NAME: ${{ secrets.GCE_VM_NAME }}
+  VM_ZONE: ${{ secrets.GCE_VM_ZONE }}
+
+jobs:
+  deploy-infrastructure:
+    name: Deploy Infrastructure to GCE VM
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Authenticate with GCP via Workload Identity Federation ───────────
+      - name: Authenticate with Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      # ── 3. Setup gcloud CLI ─────────────────────────────────────────────────
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      # ── 4. Write environment file (secrets never appear in remote commands) ──
+      - name: Create environment file for VM
+        run: |
+          cat > /tmp/infra.env << EOF
+          CB_ADMIN_USER=${{ secrets.CB_ADMIN_USER }}
+          CB_ADMIN_PASSWORD=${{ secrets.CB_ADMIN_PASSWORD }}
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+          GF_ADMIN_PASSWORD=${{ secrets.GF_ADMIN_PASSWORD }}
+          EOF
+
+      # ── 5. Write deployment script ──────────────────────────────────────────
+      - name: Create deployment script
+        run: |
+          cat > /tmp/deploy-infra.sh << 'SCRIPT'
+          #!/bin/bash
+          set -e
+
+          WORKDIR=~/observability
+          cd "$WORKDIR"
+
+          echo "=== Loading environment variables ==="
+          set -a
+          # shellcheck source=/dev/null
+          source "$WORKDIR/.env"
+          set +a
+
+          echo "=== Ensuring Docker network exists ==="
+          docker network create observability-net 2>/dev/null || echo "Network 'observability-net' already exists."
+
+          echo "=== Pulling latest infrastructure images ==="
+          docker compose pull --quiet \
+            couchbase postgres otel-collector tempo prometheus grafana
+
+          echo "=== Starting infrastructure containers ==="
+          # Named volumes ensure data persistence across updates
+          docker compose up -d \
+            couchbase postgres otel-collector tempo prometheus grafana
+
+          echo "=== Waiting 35s for Couchbase cluster to initialize ==="
+          sleep 35
+
+          echo "=== Running Couchbase initialization (idempotent) ==="
+          docker compose run --rm couchbase-init
+
+          echo ""
+          echo "=== Running containers ==="
+          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          SCRIPT
+          chmod +x /tmp/deploy-infra.sh
+
+      # ── 6. Ensure target directory exists on VM ─────────────────────────────
+      - name: Prepare VM directory
+        run: |
+          gcloud compute ssh ${{ env.VM_NAME }} \
+            --zone=${{ env.VM_ZONE }} \
+            --quiet \
+            --command="mkdir -p ~/observability/config"
+
+      # ── 7. Copy files to VM ─────────────────────────────────────────────────
+      - name: Copy configuration files to VM
+        run: |
+          # Copy observability config folder
+          gcloud compute scp \
+            --zone=${{ env.VM_ZONE }} \
+            --recurse \
+            --quiet \
+            config/ \
+            ${{ env.VM_NAME }}:~/observability/
+
+          # Copy docker-compose and init script
+          gcloud compute scp \
+            --zone=${{ env.VM_ZONE }} \
+            --quiet \
+            docker-compose.yml \
+            init-couchbase.sh \
+            ${{ env.VM_NAME }}:~/observability/
+
+          # Copy env file and deployment script
+          gcloud compute scp \
+            --zone=${{ env.VM_ZONE }} \
+            --quiet \
+            /tmp/infra.env \
+            /tmp/deploy-infra.sh \
+            ${{ env.VM_NAME }}:~/observability/
+
+          # Rename env file and set permissions
+          gcloud compute ssh ${{ env.VM_NAME }} \
+            --zone=${{ env.VM_ZONE }} \
+            --quiet \
+            --command="
+              mv ~/observability/infra.env ~/observability/.env
+              chmod 600 ~/observability/.env
+              chmod +x ~/observability/init-couchbase.sh ~/observability/deploy-infra.sh
+            "
+
+      # ── 8. Execute deployment on VM ─────────────────────────────────────────
+      - name: Deploy infrastructure containers on VM
+        run: |
+          gcloud compute ssh ${{ env.VM_NAME }} \
+            --zone=${{ env.VM_ZONE }} \
+            --quiet \
+            --command="bash ~/observability/deploy-infra.sh"
+
+      # ── 9. Health check ─────────────────────────────────────────────────────
+      - name: Verify infrastructure health
+        run: |
+          gcloud compute ssh ${{ env.VM_NAME }} \
+            --zone=${{ env.VM_ZONE }} \
+            --quiet \
+            --command="
+              echo '=== Container Status ==='
+              docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+              echo ''
+              echo '=== PostgreSQL health ==='
+              docker exec postgres pg_isready || echo 'PostgreSQL not ready'
+              echo '=== Couchbase health ==='
+              curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/ui/index.html && echo ' - Couchbase UI OK' || echo 'Couchbase not ready'
+            "
