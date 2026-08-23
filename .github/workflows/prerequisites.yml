@@ -74,27 +74,27 @@ jobs:
           cd "$WORKDIR"
 
           echo "=== Ensuring Docker network exists ==="
-          docker network create observability-net 2>/dev/null || echo "Network 'observability-net' already exists."
+          sudo docker network create observability-net 2>/dev/null || echo "Network 'observability-net' already exists."
 
           echo "=== Pulling latest infrastructure images ==="
-          docker compose pull --quiet \
+          sudo docker compose pull --quiet \
             couchbase postgres otel-collector tempo prometheus grafana
 
           echo "=== Starting infrastructure containers ==="
           # Named volumes ensure data persistence across updates.
           # Docker Compose automatically loads .env in current directory.
-          docker compose up -d \
+          sudo docker compose up -d \
             couchbase postgres otel-collector tempo prometheus grafana
 
           echo "=== Waiting 35s for Couchbase cluster to initialize ==="
           sleep 35
 
           echo "=== Running Couchbase initialization (idempotent) ==="
-          docker compose run --rm couchbase-init
+          sudo docker compose run --rm couchbase-init
 
           echo ""
           echo "=== Running containers ==="
-          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
           SCRIPT
           chmod +x /tmp/deploy-infra.sh
 
@@ -159,10 +159,10 @@ jobs:
             --quiet \
             --command="
               echo '=== Container Status ==='
-              docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+              sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
               echo ''
               echo '=== PostgreSQL health ==='
-              docker exec postgres pg_isready || echo 'PostgreSQL not ready'
+              sudo docker exec postgres pg_isready || echo 'PostgreSQL not ready'
               echo '=== Couchbase health ==='
               curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/ui/index.html && echo ' - Couchbase UI OK' || echo 'Couchbase not ready'
             "
