@@ -17,9 +17,19 @@ var builder = WebApplication.CreateBuilder(args);
 // -----------------------------------------------------------------------------
 // OpenTelemetry Configuration
 // -----------------------------------------------------------------------------
-var otlpEndpoint = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT") 
-    ?? builder.Configuration["OpenTelemetry:OtlpEndpoint"] 
-    ?? "http://localhost:4317";
+// Tanto GitHub Actions (--set-env-vars) como Cloud Run pueden dejar una variable
+// de entorno "definida pero vacía" en lugar de ausente (ej. si el secret aún no
+// existe). Environment.GetEnvironmentVariable("") no es null, así que el operador
+// ?? no la descarta — hay que tratar explícitamente la cadena vacía/whitespace
+// como "no configurado" para no romper el arranque del contenedor.
+static string ResolveOtlpEndpoint(string? envValue, string? configValue) =>
+    !string.IsNullOrWhiteSpace(envValue) ? envValue :
+    !string.IsNullOrWhiteSpace(configValue) ? configValue :
+    "http://localhost:4317";
+
+var otlpEndpoint = ResolveOtlpEndpoint(
+    Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT"),
+    builder.Configuration["OpenTelemetry:OtlpEndpoint"]);
 
 var resourceBuilder = ResourceBuilder.CreateDefault()
     .AddService(serviceName: Diagnostics.ServiceName, serviceVersion: Diagnostics.ServiceVersion);
