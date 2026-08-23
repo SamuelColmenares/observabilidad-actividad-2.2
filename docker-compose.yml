@@ -79,7 +79,8 @@ services:
     ports:
       - "4317:4317" # OTLP gRPC receiver
       - "4318:4318" # OTLP HTTP receiver
-      - "8889:8889" # Prometheus metrics exporter
+      - "8889:8889" # Prometheus metrics exporter (apps)
+      - "8888:8888" # Métricas internas del Collector
     networks:
       - observability-net
 
@@ -99,21 +100,20 @@ services:
       - otel-collector
 
   # ---------------------------------------------------------------------------
-  # 5. Grafana Tempo (Distributed Tracing Backend)
+  # 5. Jaeger (Distributed Tracing Backend + UI)
   # ---------------------------------------------------------------------------
-  tempo:
-    container_name: tempo
-    image: grafana/tempo:2.4.1
-    command: ["-config.file=/etc/tempo.yaml"]
-    volumes:
-      - ./config/tempo-config.yaml:/etc/tempo.yaml
+  jaeger:
+    container_name: jaeger
+    image: jaegertracing/all-in-one:1.58
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
     ports:
-      - "3200:3200" # Tempo HTTP GUI / API
+      - "16686:16686" # Jaeger UI
     networks:
       - observability-net
 
   # ---------------------------------------------------------------------------
-  # 5b. Grafana UI (Visualization Dashboard for Metrics & Tempo Traces)
+  # 5b. Grafana UI (Visualization Dashboard for Metrics & Jaeger Traces)
   # ---------------------------------------------------------------------------
   grafana:
     container_name: grafana
@@ -129,7 +129,7 @@ services:
       - observability-net
     depends_on:
       - prometheus
-      - tempo
+      - jaeger
 
   # ---------------------------------------------------------------------------
   # 6. Passengers Microservice (.NET 10 Minimal API)

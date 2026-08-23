@@ -7,14 +7,30 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
+  # memory_limiter debe ir primero: si hay un pico de telemetría, el Collector
+  # empieza a rechazar datos antes de agotar la memoria del contenedor y caerse.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+  # resource enriquece todas las señales (trazas, métricas, logs) con atributos
+  # del entorno antes de agruparlas y exportarlas.
+  resource:
+    attributes:
+      - action: insert
+        key: deployment.environment
+        value: local
+      - action: insert
+        key: cloud.provider
+        value: local
   batch:
     timeout: 1s
 
 exporters:
   prometheus:
     endpoint: 0.0.0.0:8889
-  otlp/tempo:
-    endpoint: tempo:4317
+  otlp/jaeger:
+    endpoint: jaeger:4317
     tls:
       insecure: true
   debug:
@@ -24,13 +40,19 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [otlp/tempo, debug]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp/jaeger, debug]
     metrics:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, resource, batch]
       exporters: [prometheus, debug]
     logs:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, resource, batch]
       exporters: [debug]
+  telemetry:
+    metrics:
+      # Métricas internas del propio Collector (otelcol_process_cpu_seconds,
+      # otelcol_exporter_send_failed_spans_total, etc.) para el panel de salud.
+      address: 0.0.0.0:8888
+      level: detailed

@@ -6,3 +6,8 @@ scrape_configs:
   - job_name: 'otel-collector'
     static_configs:
       - targets: ['otel-collector:8889']
+
+  # Métricas internas del propio Collector (CPU, spans rechazados, etc.)
+  - job_name: 'otel-collector-internal'
+    static_configs:
+      - targets: ['otel-collector:8888']

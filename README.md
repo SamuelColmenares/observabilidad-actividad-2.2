@@ -1,6 +1,8 @@
-# Actividad 2.2: Laboratorio de Observabilidad con Microservicios en .NET 10 y Docker Compose
+# Actividad 2.2: Laboratorio de Observabilidad con Microservicios en .NET 10, GKE y Docker Compose
 
-Este repositorio contiene una solución completa para un laboratorio local de observabilidad basada en **.NET 10 Minimal API**, integrada con **OpenTelemetry**, **PostgreSQL**, **Couchbase**, **Prometheus**, **Grafana Tempo** y **Grafana Dashboard**, orquestados completamente a través de **Docker Compose**.
+Este repositorio contiene una solución completa de observabilidad basada en **.NET 10 Minimal API**, instrumentada con **OpenTelemetry SDK** (trazas, métricas y logs estructurados), con un **OTel Collector** desplegado en **GKE Autopilot** que exporta hacia **Jaeger** (trazas), **Prometheus** (métricas) y **Cloud Logging** (logs). El entorno local usa **Docker Compose**; en la nube, **PostgreSQL/Couchbase** viven en una VM de GCE, el plano de observabilidad vive en GKE, y `Passengers`/`Checkin` se despliegan en **Cloud Run**.
+
+> **Alcance:** esta actividad cubre únicamente **GCP** (Cloud Run + GKE Autopilot + GCE). No se implementa la variante AWS (ECS Fargate + X-Ray) mencionada como alternativa en el enunciado del laboratorio — ver la sección **🚫 Alcance y Exclusiones** al final de este documento.
 
 ---
 
@@ -16,30 +18,50 @@ Este repositorio contiene una solución completa para un laboratorio local de ob
   - Creación automática del bucket **`checkin_bucket`** (RAM 256MB) si no existe.
   - Utilización explícita del **scope por defecto (`_default`)** y **collection por defecto (`_default`)**.
 - **Observabilidad e Interfaz Visual Integrada**:
-  - **Grafana UI (`:3000`)**: Aprovisionamiento automático de datasources para Prometheus y Grafana Tempo.
-  - **Traces**: OpenTelemetry SDK + Exporter OTLP (`:4317`) + Propagación de contexto distribuido W3C (`traceparent`).
-  - **Metrics**: Instrumentos nativos `System.Diagnostics.Metrics` exportados vía OTLP hacia Prometheus (`:8889` -> `:9090`).
-  - **Logs**: Logging estructurado con `ILogger` enriquecido con `CorrelationId` e ID de traza.
+  - **Grafana UI (`:3000`)**: Aprovisionamiento automático de datasources para Prometheus, Jaeger y Google Cloud Logging.
+  - **Traces**: OpenTelemetry SDK + Exporter OTLP (`:4317`) + Propagación de contexto distribuido W3C (`traceparent`), custom spans de negocio (`GetPassengerById`, `CreatePassenger`, `ProcessCheckin`, `ValidatePassengerHttp`, `PersistCheckinCouchbase`).
+  - **Metrics**: Instrumentos nativos `System.Diagnostics.Metrics` + `OpenTelemetry.Instrumentation.Runtime` (CPU/GC/memoria del proceso .NET) exportados vía OTLP hacia Prometheus (`:8889` y métricas internas del Collector en `:8888`).
+  - **Logs**: Logging estructurado en **JSON** (`OtelJsonConsoleFormatter`) enriquecido con `trace_id`/`span_id` del `Activity` activo, para correlación logs ↔ trazas.
 - **Docker Compose**: Contenedores en la red `observability-net` con volúmenes de datos nombrados para persistencia.
 
 ---
 
 ## 🏗️ Arquitectura del Sistema
 
-La arquitectura está compuesta por contenedores interconectados mediante una red privada de Docker (`observability-net`):
+### Entorno local (Docker Compose)
 
 ```text
 [ Cliente / Curl ]
         │
         ├───> Passengers Service (HTTP :5001) ───> PostgreSQL (:5432)
         │            │
-        │            └───> OpenTelemetry Collector (:4317 OTLP)
+        │            └───> OpenTelemetry Collector (:4317 OTLP, :8888 métricas internas)
         │                         │
         └───> Checkin Service (HTTP :5002)                        ├───> Prometheus (:9090) [Metrics] ────┐
-                     │            │                               └───> Grafana Tempo (:3200) [Traces]   │
+                     │            │                               └───> Jaeger (:16686) [Traces]          │
                      ├───(HTTP)───┘                                              │                        │
                      └───> Couchbase Cluster "airline" (:8091, :11210)         └──────> Grafana UI (:3000) ◄┘
                                └── Bucket "checkin_bucket" (_default / _default)
+```
+
+### Entorno en la nube (GCP)
+
+```text
+┌─────────────────────────────┐        ┌──────────────────────────────────────────────┐
+│  Cloud Run                  │        │  GKE Autopilot — namespace "observability"    │
+│  ├── passengers-service     │  OTLP  │  ├── otel-collector (memory_limiter→resource→ │
+│  └── checkin-service ───────┼───────>│  │    batch) ── LoadBalancer :4317/:4318      │
+└──────────────┬──────────────┘        │  ├── jaeger (trazas)     ── LoadBalancer :16686│
+               │ SQL / Couchbase       │  ├── prometheus (métricas)── ClusterIP :9090  │
+               ▼                       │  └── grafana (dashboards + Explore)           │
+┌─────────────────────────────┐        │         ├── datasource Prometheus             │
+│  VM de GCE (observability-vm)│        │         ├── datasource Jaeger                 │
+│  ├── PostgreSQL              │        │         └── datasource Google Cloud Logging   │
+│  └── Couchbase "airline"     │        │             (Workload Identity, sin llaves)   │
+└─────────────────────────────┘        └──────────────────────┬─────────────────────────┘
+                                                                │ logs (googlecloud exporter)
+                                                                ▼
+                                                        Cloud Logging (GCP)
 ```
 
 ---
@@ -78,10 +100,11 @@ docker-compose ps
 | **Passengers API** | `http://localhost:5001` | API de gestión de pasajeros |
 | **Checkin API** | `http://localhost:5002` | API de procesamiento de check-in |
 | **Prometheus** | `http://localhost:9090` | Panel de métricas Prometheus |
-| **Grafana Tempo API** | `http://localhost:3200` | Backend API de trazas distribuidas |
+| **Jaeger UI** | `http://localhost:16686` | UI de trazas distribuidas |
 | **Couchbase Console** | `http://localhost:8091` | Consola NoSQL (`Administrator` / `password`) |
 | **OTLP Collector gRPC** | `localhost:4317` | Puerto de recepción de OpenTelemetry |
-| **OTLP Collector Metrics** | `http://localhost:8889/metrics` | Exporter de métricas en formato Prometheus |
+| **OTLP Collector Metrics** | `http://localhost:8889/metrics` | Exporter de métricas en formato Prometheus (apps) |
+| **OTLP Collector Internal Metrics** | `http://localhost:8888/metrics` | Métricas internas del propio Collector (CPU, spans rechazados, etc.) |
 | **PostgreSQL** | `localhost:5432` | Servidor de base de datos relacional |
 
 ---
@@ -92,13 +115,22 @@ docker-compose ps
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────────┐
-│  Cambios en config/** o init-couchbase.sh                                        │
+│  Cambios en init-couchbase.sh o docker-compose.yml                               │
 │                │                                                                  │
 │                ▼                                                                  │
 │  ┌─────────────────────────────┐                                                 │
 │  │  prerequisites.yml          │  ──► GCE VM (e2-medium)                         │
-│  │  Deploy Infrastructure      │      PostgreSQL, Couchbase, OTel,               │
-│  │  (workflow_dispatch / push) │      Tempo, Prometheus, Grafana                 │
+│  │  Deploy Databases           │      PostgreSQL, Couchbase                      │
+│  │  (workflow_dispatch / push) │                                                 │
+│  └─────────────────────────────┘                                                 │
+│                                                                                  │
+│  Cambios en k8s/gcp/**                                                          │
+│                │                                                                  │
+│                ▼                                                                  │
+│  ┌─────────────────────────────┐                                                 │
+│  │  observability-gke.yml      │  ──► GKE Autopilot (namespace observability)   │
+│  │  Deploy Observability Stack │      OTel Collector, Jaeger, Prometheus,        │
+│  │  (workflow_dispatch / push) │      Grafana                                   │
 │  └─────────────────────────────┘                                                 │
 │                                                                                  │
 │  Cambios en Passengers/**          Cambios en Checkin/**                         │
@@ -110,9 +142,9 @@ docker-compose ps
 │  │ 1. Build & Test  │           │ 1. Build & Test  │                             │
 │  │ 2. Build & Push  │──────────►│ 2. Build & Push  │──► Artifact Registry        │
 │  │ 3. Deploy to     │           │ 3. Deploy to     │──► Cloud Run                │
-│  │    Cloud Run     │           │    Cloud Run     │    (Couchbase/OTel → VM)    │
-│  │    (PG/OTel → VM)│           └──────────────────┘                             │
-│  └──────────────────┘                                                            │
+│  │    Cloud Run     │           │    Cloud Run     │    (PG/Couchbase → VM;      │
+│  │    (OTLP → GKE)  │           │    (OTLP → GKE)  │     OTLP → Collector GKE)   │
+│  └──────────────────┘           └──────────────────┘                             │
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -120,19 +152,21 @@ docker-compose ps
 
 | Archivo | Trigger | Jobs Incluidos | Descripción |
 | :--- | :--- | :--- | :--- |
-| `prerequisites.yml` | push a `main` en `config/**`, `init-couchbase.sh`, `docker-compose.yml`; o manual (`workflow_dispatch`) | `deploy-infrastructure` | Despliega/actualiza PostgreSQL, Couchbase (+ init), OTel Collector, Tempo, Prometheus y Grafana en una VM de GCE vía SSH |
+| `prerequisites.yml` | push a `main` en `init-couchbase.sh`, `docker-compose.yml`; o manual (`workflow_dispatch`) | `deploy-infrastructure` | Despliega/actualiza **solo PostgreSQL y Couchbase** (+ init) en una VM de GCE vía SSH |
+| `observability-gke.yml` | push a `main` en `k8s/gcp/**`; o manual (`workflow_dispatch`) | `deploy-observability` | Crea (si no existe) un clúster **GKE Autopilot**, aplica los manifiestos de `k8s/gcp/` y despliega OTel Collector, Jaeger, Prometheus y Grafana |
 | `passengers.yml` | push / PR a `main` en `Passengers/**` o `Passengers.Tests/**`; o manual (`workflow_dispatch`) | `build-and-test` (CI)<br>`build-and-push` (CD)<br>`deploy-cloud-run` (CD) | Compila y corre UTs del servicio Passengers. Si pasa CI y es `main`, compila Docker, sube a Artifact Registry y despliega a Cloud Run |
 | `checkin.yml` | push / PR a `main` en `Checkin/**` o `Checkin.Tests/**`; o manual (`workflow_dispatch`) | `build-and-test` (CI)<br>`build-and-push` (CD)<br>`deploy-cloud-run` (CD) | Compila y corre UTs del servicio Checkin. Si pasa CI y es `main`, compila Docker, sube a Artifact Registry y despliega a Cloud Run |
 
 ### Orden de Ejecución Obligatorio (Primera Vez)
 
 ```
-1. prerequisites.yml        ← SIEMPRE primero (al menos una vez)
-2. passengers.yml           ← Segundo (Checkin depende de la URL de Passengers)
-3. checkin.yml              ← Tercero
+1. prerequisites.yml        ← SIEMPRE primero (al menos una vez) — Postgres/Couchbase en la VM
+2. observability-gke.yml    ← Segundo — crea el clúster GKE y el plano de observabilidad
+3. passengers.yml           ← Tercero (Checkin depende de la URL de Passengers)
+4. checkin.yml              ← Cuarto
 ```
 
-> **Primera vez:** Después de que `passengers.yml` despliegue con éxito, copia la URL del servicio Cloud Run mostrada en el Step Summary y agrégala como secret `PASSENGERS_SERVICE_URL`. Esto es necesario solo una vez.
+> **Primera vez:** Después de que `observability-gke.yml` despliegue con éxito, copia la IP externa de `otel-collector` mostrada en el Step Summary y agrégala como secret `OTEL_COLLECTOR_ENDPOINT` (formato `http://<IP>:4317`). Después de que `passengers.yml` despliegue con éxito, copia la URL del servicio Cloud Run mostrada en el Step Summary y agrégala como secret `PASSENGERS_SERVICE_URL`. Ambos pasos son necesarios solo una vez.
 
 ---
 
@@ -147,12 +181,19 @@ Agrega los siguientes secrets en: **Settings → Secrets and variables → Actio
 | `GCP_WIF_PROVIDER` | `projects/123456789/locations/global/workloadIdentityPools/github-pool/providers/github-provider` |
 | `GCP_SERVICE_ACCOUNT` | `github-actions-sa@mi-proyecto-123456.iam.gserviceaccount.com` |
 
-#### VM de GCE
+#### VM de GCE (bases de datos)
 | Secret | Ejemplo / Descripción |
 | :--- | :--- |
 | `GCE_VM_NAME` | `observability-vm` |
 | `GCE_VM_ZONE` | `us-central1-a` |
 | `GCE_VM_EXTERNAL_IP` | IP pública estática de la VM (ej. `34.68.100.200`) |
+
+#### GKE Autopilot (plano de observabilidad) — nuevos
+| Secret | Ejemplo / Descripción |
+| :--- | :--- |
+| `GKE_CLUSTER_NAME` | `observability-gke` |
+| `GKE_CLUSTER_REGION` | `us-central1` |
+| `OTEL_COLLECTOR_ENDPOINT` | `http://<IP-externa-otel-collector>:4317`. Se obtiene tras el primer deploy de `observability-gke.yml` (ver Step Summary) |
 
 #### Bases de Datos
 | Secret | Valor por defecto local | Descripción |
@@ -162,7 +203,7 @@ Agrega los siguientes secrets en: **Settings → Secrets and variables → Actio
 | `POSTGRES_USER` | `postgres` | Usuario de PostgreSQL |
 | `POSTGRES_PASSWORD` | `postgres` | Contraseña de PostgreSQL |
 | `POSTGRES_DB` | `passengers_db` | Nombre de la base de datos |
-| `GF_ADMIN_PASSWORD` | `admin` | Contraseña admin de Grafana |
+| `GF_ADMIN_PASSWORD` | `admin` | Contraseña admin de Grafana (ahora usada por `observability-gke.yml` para crear el Secret `grafana-admin-credentials` en GKE) |
 
 #### Inter-Servicio
 | Secret | Descripción |
@@ -198,41 +239,95 @@ docker-compose.yml         GitHub Secrets
 
 ---
 
-## 👁️ Cómo Visualizar las Trazas Registradas en Tempo
+## 👁️ Cómo Visualizar las Trazas Registradas en Jaeger
 
-Existen **3 formas principales** para inspeccionar las trazas distribuidas capturadas por Grafana Tempo:
+Existen **3 formas principales** para inspeccionar las trazas distribuidas capturadas por Jaeger:
 
-### Opción 1: Grafana UI (Método Gráfico Recomendado 🎨)
+### Opción 1: Jaeger UI directa (Método Gráfico Recomendado 🎨)
 
-1. Abre en tu navegador `http://localhost:3000` e inicia sesión (`admin` / `admin`).
+1. Abre en tu navegador `http://localhost:16686` (local) o la IP externa del Service `jaeger` en GKE (`http://<jaeger_IP>:16686`).
+2. En el selector **Service**, elige `passengers-service` o `checkin-service`.
+3. Haz clic en **Find Traces**. Aparecerá el listado de trazas recibidas.
+4. Selecciona cualquier traza para abrir el diagrama interconectado (*Flamegraph*), mostrando la cascada de llamadas HTTP entre `Checkin` -> `Passengers` -> `PostgreSQL` / `Couchbase`.
+
+### Opción 1b: Grafana Explore (datasource Jaeger)
+
+1. Abre `http://localhost:3000` (local) o la IP externa del Service `grafana` en GKE, inicia sesión (`admin` / valor de `GF_ADMIN_PASSWORD`).
 2. En el menú lateral izquierdo, selecciona **Explore** (icono de compás).
-3. En el selector superior de origen de datos (*DataSource*), elige **Tempo**.
-4. Haz clic en la pestaña **Search** y selecciona el servicio (ej. `passengers-service` o `checkin-service`).
-5. Haz clic en **Run query**. Aparecerá el listado de trazas recibidas.
-6. Selecciona cualquier Trace ID para abrir el diagrama interconectado (*Flamegraph*), mostrando la cascada de llamadas HTTP entre `Checkin` -> `Passengers` -> `PostgreSQL` / `Couchbase`.
+3. En el selector superior de origen de datos (*DataSource*), elige **Jaeger**.
+4. Selecciona el servicio y haz clic en **Run query**.
 
-### Opción 2: API HTTP de Tempo (`curl` / Navegador 🌐)
+### Opción 2: API HTTP de Jaeger (`curl` / Navegador 🌐)
 
-Puedes consultar trazas directamente utilizando la API REST de Tempo:
+Puedes consultar trazas directamente utilizando la API REST de Jaeger:
 
 ```bash
-# Consultar el estado y salud de Tempo
-curl -X GET "http://localhost:3200/ready"
+# Listar los servicios que han reportado trazas
+curl -X GET "http://localhost:16686/api/services"
 
-# Buscar trazas recientes en Tempo
-curl -X GET "http://localhost:3200/api/v2/search"
+# Buscar trazas recientes de un servicio
+curl -X GET "http://localhost:16686/api/traces?service=passengers-service&limit=20"
 
 # Consultar los detalles de una traza por su Trace ID
-curl -X GET "http://localhost:3200/api/traces/<TRACE_ID>"
+curl -X GET "http://localhost:16686/api/traces/<TRACE_ID>"
 ```
 
 ### Opción 3: Logs del OpenTelemetry Collector (Consola 💻)
 
-El archivo `config/otel-collector-config.yaml` está configurado con el exportador `debug` en modo `detailed`. Cada vez que un microservicio envía un span, los detalles se imprimen en los logs del colector:
+El archivo `config/otel-collector-config.yaml` (local) / `k8s/gcp/01-configmaps.yaml` (GKE) está configurado con el exportador `debug`. Cada vez que un microservicio envía un span, los detalles se imprimen en los logs del colector:
 
 ```bash
+# Local
 docker-compose logs -f otel-collector
+
+# GKE
+kubectl logs -n observability -l app=otel-collector -f
 ```
+
+---
+
+## 🔗 Verificación de Propagación de Contexto W3C (traceparent)
+
+Para confirmar que el `trace_id` viaja correctamente entre `Checkin` → `Passengers` (y sus respectivas bases de datos):
+
+```bash
+# 1. Disparar un check-in que internamente llama a Passengers
+curl -X POST "http://localhost:5002/checkin" \
+  -H "Content-Type: application/json" \
+  -d '{"passengerId":"PAS-1001","flightNumber":"AV302","seatNumber":"14C","baggageCount":1}'
+
+# 2. Tomar el trace_id de la respuesta (header X-Correlation-ID) o de los logs JSON:
+docker-compose logs checkin | grep '"trace_id"' | tail -n 1
+
+# 3. Buscar ese trace_id en Jaeger UI (http://localhost:16686 → Search by Trace ID)
+```
+
+**Lo que debes verificar en el flame graph de Jaeger:** un único `trace_id` con spans anidados de `checkin-service` (`ProcessCheckin` → `ValidatePassengerHttp` → `PersistCheckinCouchbase`) y de `passengers-service` (`GetPassengerById`), confirmando que el header `traceparent` inyectado automáticamente por `AddHttpClientInstrumentation()`/`AddAspNetCoreInstrumentation()` propaga el contexto entre ambos servicios.
+
+---
+
+## 📄 Logs Estructurados JSON y Correlación con Trazas
+
+Ambos servicios emiten logs de consola en JSON (`OtelJsonConsoleFormatter`) con esta forma:
+
+```json
+{"timestamp":"2026-08-23T18:04:12.123Z","level":"Information","category":"Program","service":"checkin-service","message":"Validating passenger PAS-1001 via Passengers service...","trace_id":"1a2b3c4d5e6f7890abcdef1234567890","span_id":"abcdef1234567890"}
+```
+
+- **Local**: `docker-compose logs -f checkin` / `docker-compose logs -f passengers`.
+- **GCP**: los mismos logs llegan también al OTel Collector vía OTLP y de ahí a **Cloud Logging** (exporter `googlecloud`, pipeline de logs en `k8s/gcp/01-configmaps.yaml`).
+
+### Plugin de Google Cloud Logging y Correlación en Grafana
+
+El Grafana desplegado en GKE incluye el datasource **Google Cloud Logging** (plugin oficial `googlecloud-logging-datasource`), autenticado vía Workload Identity (sin llaves JSON — ver permisos requeridos más abajo). Para poder pivotear de un log en Cloud Logging hacia su traza en Jaeger usando `trace_id`, configura una vez la función **Correlations** de Grafana (no se aprovisiona por YAML porque requiere el UID real del datasource Jaeger ya creado):
+
+1. Entra a **Administration → Plugins and data → Correlations → Add**.
+2. **Label**: `Cloud Logging → Jaeger`.
+3. **Target data source**: `Jaeger`. En la query, usa el trace ID como variable (`${traceId}`).
+4. **Source data source**: `Google Cloud Logging`. **Results field**: el campo `trace` (o `trace_id` si extraes con una transformación `regex`/`logfmt` del `jsonPayload`).
+5. Guarda. Desde ahora, cualquier resultado de Cloud Logging con ese campo mostrará un enlace que abre la traza correspondiente en Jaeger dentro de Grafana Explore.
+
+> Se documenta como paso manual de una sola vez (vía UI) en lugar de aprobar directamente el YAML de correlación, porque la estructura exacta del "target query" depende del UID que Grafana asigna al datasource Jaeger en tiempo de ejecución — ver [documentación oficial de Grafana Correlations](https://grafana.com/docs/grafana/latest/administration/correlations/).
 
 ---
 
@@ -330,21 +425,29 @@ gcloud compute instances create ${VM_NAME} \
   --tags=observability-server \
   --project=${PROJECT_ID}
 
-# Crear regla de firewall para los puertos de los servicios
+# Crear regla de firewall para los puertos de los servicios de base de datos
 # NOTA: Solo para uso educativo. En producción, restringir source-ranges.
+# NOTA: Los puertos de observabilidad (4317/4318/8889/8888/9090/3000/16686) YA NO
+# viven en esta VM — ahora corren en GKE Autopilot (ver k8s/gcp/ y observability-gke.yml).
 
 # PowerShell: el valor de --allow DEBE ir entre comillas (las comas son separadores de array en PS)
 gcloud compute firewall-rules create allow-observability-services `
-  --allow="tcp:5432,tcp:8091,tcp:8092,tcp:8093,tcp:11210,tcp:4317,tcp:4318,tcp:8889,tcp:9090,tcp:3000,tcp:3200" `
+  --allow="tcp:5432,tcp:8091,tcp:8092,tcp:8093,tcp:11210" `
   --target-tags=observability-server `
   --source-ranges=0.0.0.0/0 `
-  --description="Allow observability service ports (educational only)" `
+  --description="Allow database service ports (educational only)" `
   --project=$env:PROJECT_ID
 
 # bash / Cloud Shell (alternativa):
 # gcloud compute firewall-rules create allow-observability-services \
-#   --allow="tcp:5432,tcp:8091,tcp:8092,tcp:8093,tcp:11210,tcp:4317,tcp:4318,tcp:8889,tcp:9090,tcp:3000,tcp:3200" \
+#   --allow="tcp:5432,tcp:8091,tcp:8092,tcp:8093,tcp:11210" \
 #   --target-tags=observability-server --source-ranges=0.0.0.0/0 \
+#   --project=${PROJECT_ID}
+
+# Si la regla ya existía con los puertos de observabilidad (setup previo a este
+# ajuste), actualízala para retirar los puertos que ya no corren en la VM:
+# gcloud compute firewall-rules update allow-observability-services \
+#   --allow="tcp:5432,tcp:8091,tcp:8092,tcp:8093,tcp:11210" \
 #   --project=${PROJECT_ID}
 
 # Instalar Docker en la VM (Método oficial y seguro)
@@ -463,3 +566,49 @@ gcloud compute instances describe ${VM_NAME} \
 ```
 
 Copia los valores obtenidos y agrégalos como secrets en GitHub: **Settings → Secrets and variables → Actions**.
+
+---
+
+## ⚠️ Permisos GCP Adicionales Requeridos para GKE (pendientes de autorización)
+
+Los siguientes comandos **no han sido ejecutados** — quedan documentados en el orden en que deben aplicarse para que `observability-gke.yml` funcione. Deben ejecutarse **una sola vez** con una cuenta que tenga privilegios de IAM sobre el proyecto (p. ej. `gcloud auth login` con el usuario propietario del proyecto), **antes** de disparar ese workflow por primera vez.
+
+```bash
+export PROJECT_ID="tu-proyecto-gcp"
+SA_EMAIL="github-actions-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# 1. Habilitar el servicio de administración de APIs (necesario para que el
+#    propio workflow pueda habilitar container.googleapis.com / cloudresourcemanager.googleapis.com)
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/serviceusage.serviceUsageAdmin"
+
+# 2. Crear y administrar el clúster GKE Autopilot
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/container.admin"
+
+# 3. Crear la Service Account de Grafana (grafana-cloudlogging-sa) y enlazarla
+#    con Workload Identity
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/iam.serviceAccountAdmin"
+
+# 4. Otorgar el rol roles/logging.viewer a la Service Account de Grafana
+#    (permite al SA de GitHub Actions modificar políticas IAM a nivel de proyecto)
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/resourcemanager.projectIamAdmin"
+```
+
+> **Nota de seguridad:** `roles/resourcemanager.projectIamAdmin` es un rol amplio (permite modificar bindings IAM de cualquier miembro en el proyecto). Para un entorno productivo, se recomienda reemplazarlo por un [rol personalizado](https://cloud.google.com/iam/docs/creating-custom-roles) acotado únicamente a `resourcemanager.projects.setIamPolicy` sobre el binding específico de `roles/logging.viewer`. Se documenta así, sin sesgo, para que decidas conscientemente el trade-off entre simplicidad y mínimo privilegio.
+
+---
+
+## 🚫 Alcance y Exclusiones
+
+- **Solo GCP.** El enunciado del laboratorio menciona una ruta alternativa en AWS (ECS Fargate + AWS X-Ray/Tempo). Esta actividad **no la implementa**: el repositorio, los workflows y los secrets están construidos exclusivamente alrededor de GCP (Cloud Run + GKE Autopilot + GCE), que es el proveedor que ya estaba en uso antes de este ajuste.
+- **Tempo fue reemplazado por Jaeger** (no coexisten) para cumplir literalmente con "Trazas: Jaeger UI (GCP)" del enunciado.
+- **PostgreSQL y Couchbase permanecen en la VM de GCE.** Solo se migró a GKE el plano de observabilidad (Collector, Jaeger, Prometheus, Grafana), que es lo que exige la Fase 2 del enunciado.
+- **Dashboards de Grafana (6 paneles), correlación logs↔trazas en profundidad y benchmark de overhead (k6/locust)** quedan fuera del alcance de este ajuste — la instrumentación, el Collector y los datasources necesarios ya quedan preparados (incluyendo métricas internas del Collector en `:8888` y `OpenTelemetry.Instrumentation.Runtime` para overhead de CPU/memoria) para que puedan completarse sin requerir cambios de arquitectura.
+
