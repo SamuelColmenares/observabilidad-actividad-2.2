@@ -62,15 +62,47 @@ jobs:
             cloudresourcemanager.googleapis.com \
             --project=${{ env.PROJECT_ID }}
 
+          # La habilitación de una API por primera vez tarda unos minutos en
+          # propagarse a los sistemas internos que usa el control plane de GKE.
+          # Sin esta espera, "clusters create-auto" puede fallar con
+          # "Kubernetes Engine API has not been used in project... or it is disabled"
+          # incluso justo después de que "services enable" reportó éxito.
+          echo "Waiting for container.googleapis.com to propagate..."
+          for i in $(seq 1 12); do
+            STATE=$(gcloud services list --enabled \
+              --filter="config.name:container.googleapis.com" \
+              --project=${{ env.PROJECT_ID }} \
+              --format="value(state)" 2>/dev/null || true)
+            if [ "$STATE" = "ENABLED" ]; then
+              echo "container.googleapis.com is ENABLED."
+              break
+            fi
+            echo "Not ready yet (attempt ${i}/12), waiting 15s..."
+            sleep 15
+          done
+
       # ── 5. Create GKE Autopilot cluster if it doesn't exist (idempotente) ────
       - name: Ensure GKE Autopilot cluster exists
         run: |
-          gcloud container clusters describe ${{ env.CLUSTER_NAME }} \
-            --region=${{ env.CLUSTER_REGION }} \
-            --project=${{ env.PROJECT_ID }} > /dev/null 2>&1 || \
-          gcloud container clusters create-auto ${{ env.CLUSTER_NAME }} \
-            --region=${{ env.CLUSTER_REGION }} \
-            --project=${{ env.PROJECT_ID }}
+          for i in $(seq 1 5); do
+            if gcloud container clusters describe ${{ env.CLUSTER_NAME }} \
+              --region=${{ env.CLUSTER_REGION }} \
+              --project=${{ env.PROJECT_ID }} > /dev/null 2>&1; then
+              echo "Cluster already exists."
+              exit 0
+            fi
+
+            if gcloud container clusters create-auto ${{ env.CLUSTER_NAME }} \
+              --region=${{ env.CLUSTER_REGION }} \
+              --project=${{ env.PROJECT_ID }}; then
+              exit 0
+            fi
+
+            echo "create-auto failed (attempt ${i}/5) — likely API propagation delay. Retrying in 30s..."
+            sleep 30
+          done
+          echo "Failed to create the GKE Autopilot cluster after 5 attempts."
+          exit 1
 
       # ── 6. Fetch cluster credentials for kubectl ─────────────────────────────
       - name: Get GKE credentials
