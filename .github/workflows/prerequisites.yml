@@ -54,13 +54,13 @@ jobs:
       # ── 4. Write environment file (secrets never appear in remote commands) ──
       - name: Create environment file for VM
         run: |
-          cat > /tmp/infra.env << EOF
-          CB_ADMIN_USER=${{ secrets.CB_ADMIN_USER }}
-          CB_ADMIN_PASSWORD=${{ secrets.CB_ADMIN_PASSWORD }}
-          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-          GF_ADMIN_PASSWORD=${{ secrets.GF_ADMIN_PASSWORD }}
+          cat << EOF > /tmp/infra.env
+          CB_ADMIN_USER="${{ secrets.CB_ADMIN_USER }}"
+          CB_ADMIN_PASSWORD="${{ secrets.CB_ADMIN_PASSWORD }}"
+          POSTGRES_USER="${{ secrets.POSTGRES_USER }}"
+          POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}"
+          POSTGRES_DB="${{ secrets.POSTGRES_DB }}"
+          GF_ADMIN_PASSWORD="${{ secrets.GF_ADMIN_PASSWORD }}"
           EOF
 
       # ── 5. Write deployment script ──────────────────────────────────────────
@@ -73,12 +73,6 @@ jobs:
           WORKDIR=~/observability
           cd "$WORKDIR"
 
-          echo "=== Loading environment variables ==="
-          set -a
-          # shellcheck source=/dev/null
-          source "$WORKDIR/.env"
-          set +a
-
           echo "=== Ensuring Docker network exists ==="
           docker network create observability-net 2>/dev/null || echo "Network 'observability-net' already exists."
 
@@ -87,7 +81,8 @@ jobs:
             couchbase postgres otel-collector tempo prometheus grafana
 
           echo "=== Starting infrastructure containers ==="
-          # Named volumes ensure data persistence across updates
+          # Named volumes ensure data persistence across updates.
+          # Docker Compose automatically loads .env in current directory.
           docker compose up -d \
             couchbase postgres otel-collector tempo prometheus grafana
 
