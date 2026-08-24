@@ -99,6 +99,23 @@ data:
 # ── Grafana: datasources provisionados (Prometheus, Jaeger, Google Cloud Logging).
 # El datasource "Google Cloud Logging" usa authenticationType: gce, es decir,
 # se autentica con la identidad del pod (Workload Identity) — ver 05-grafana.yaml.
+#
+# Redirección logs → traza (trace_id ya viaja en cada log JSON, ver
+# Passengers/Telemetry/OtelJsonConsoleFormatter.cs). El datasource nativo de
+# Google Cloud Logging SOLO soporta "logs to traces" hacia Google Cloud Trace
+# (jsonData.logsToTraces), no hacia Jaeger, así que la redirección hacia Jaeger
+# se implementa con el mecanismo genérico de Grafana "Correlations" (GA desde
+# Grafana 10.3), definido como subsección del datasource de origen (Cloud
+# Logging) apuntando al datasource destino (Jaeger) por UID.
+#
+# ⚠️ El nombre exacto del campo (`correlations[].config.field`) depende de cómo
+# el plugin de Cloud Logging aplana el JSON del log en el resultado de Explore.
+# Se usa "jsonPayload.trace_id" como valor esperado (Cloud Run parsea el stdout
+# JSON de la app como jsonPayload). Si al probar el link "Ver traza en Jaeger"
+# no aparece o no resuelve, verificar el nombre real del campo con Explore →
+# seleccionar "Google Cloud Logging" → correr una query → Query Inspector →
+# ajustar el valor de "field" aquí (o directamente en Administration →
+# Correlations en la UI de Grafana) y reaplicar este ConfigMap.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -109,6 +126,7 @@ data:
     apiVersion: 1
     datasources:
       - name: Prometheus
+        uid: prometheus
         type: prometheus
         access: proxy
         url: http://prometheus:9090
@@ -117,6 +135,7 @@ data:
           timeInterval: 5s
 
       - name: Jaeger
+        uid: jaeger
         type: jaeger
         access: proxy
         url: http://jaeger:16686
@@ -126,7 +145,18 @@ data:
             tag: 'http.status_code'
 
       - name: Google Cloud Logging
+        uid: cloud-logging
         type: googlecloud-logging-datasource
         access: proxy
         jsonData:
           authenticationType: gce
+        correlations:
+          - targetUID: jaeger
+            label: "Ver traza completa en Jaeger"
+            description: "Abre en Jaeger la traza distribuida correspondiente al trace_id de este log"
+            type: query
+            config:
+              field: "jsonPayload.trace_id"
+              target:
+                queryType: "traceID"
+                query: "${__value.raw}"

@@ -27,69 +27,104 @@ static string ResolveOtlpEndpoint(string? envValue, string? configValue) =>
     !string.IsNullOrWhiteSpace(configValue) ? configValue :
     "http://localhost:4317";
 
-var otlpEndpoint = ResolveOtlpEndpoint(
-    Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT"),
-    builder.Configuration["OpenTelemetry:OtlpEndpoint"]);
+// -----------------------------------------------------------------------------
+// Feature Flag: OBSERVABILITY_ENABLED (para benchmark de overhead - Fase 4)
+// -----------------------------------------------------------------------------
+// Permite desactivar POR COMPLETO el pipeline de OpenTelemetry (tracing,
+// métricas y logging exporter) en runtime, sin rebuild de la imagen, para
+// comparar el servicio "sin instrumentación" vs "con instrumentación".
+// Default: true (instrumentación activa). Establecer OBSERVABILITY_ENABLED=false
+// para el escenario baseline del benchmark.
+//
+// Nota: aun con la bandera en true, el SDK de OpenTelemetry también respeta la
+// variable estándar OTEL_SDK_DISABLED=true (spec oficial), que pone el SDK en
+// modo no-op de exportación mientras deja los instrumentadores registrados.
+// Úsala si sólo quieres aislar el overhead de exportación/red, en lugar del
+// overhead total de instrumentación.
+static bool ResolveObservabilityEnabled(string? envValue) =>
+    !string.Equals(envValue, "false", StringComparison.OrdinalIgnoreCase);
 
-var resourceBuilder = ResourceBuilder.CreateDefault()
-    .AddService(serviceName: Diagnostics.ServiceName, serviceVersion: Diagnostics.ServiceVersion);
+var observabilityEnabled = ResolveObservabilityEnabled(
+    Environment.GetEnvironmentVariable("OBSERVABILITY_ENABLED"));
 
-// 1. Configure OpenTelemetry Tracing
-builder.Services.AddOpenTelemetry()
-    .WithTracing(tracing =>
-    {
-        tracing
-            .SetResourceBuilder(resourceBuilder)
-            .AddSource(Diagnostics.ServiceName)
-            .AddAspNetCoreInstrumentation(options =>
-            {
-                options.RecordException = true;
-            })
-            .AddHttpClientInstrumentation(options =>
-            {
-                options.RecordException = true;
-            })
-            .AddOtlpExporter(options =>
-            {
-                options.Endpoint = new Uri(otlpEndpoint);
-                options.Protocol = OtlpExportProtocol.Grpc;
-            });
-    })
-    // 2. Configure OpenTelemetry Metrics
-    .WithMetrics(metrics =>
-    {
-        metrics
-            .SetResourceBuilder(resourceBuilder)
-            .AddMeter(Diagnostics.ServiceName)
-            .AddMeter("Microsoft.AspNetCore.Hosting")
-            .AddMeter("Microsoft.AspNetCore.Server.Kestrel")
-            .AddMeter("System.Net.Http")
-            .AddAspNetCoreInstrumentation()
-            .AddHttpClientInstrumentation()
-            .AddRuntimeInstrumentation()
-            .AddOtlpExporter((options, readerOptions) =>
-            {
-                options.Endpoint = new Uri(otlpEndpoint);
-                options.Protocol = OtlpExportProtocol.Grpc;
-                readerOptions.PeriodicExportingMetricReaderOptions.ExportIntervalMilliseconds = 2000;
-            });
-    });
-
-// 3. Configure OpenTelemetry Logging
-builder.Logging.ClearProviders();
-builder.Logging.AddConsole(options => options.FormatterName = OtelJsonConsoleFormatter.FormatterName)
-    .AddConsoleFormatter<OtelJsonConsoleFormatter, ConsoleFormatterOptions>();
-builder.Logging.AddOpenTelemetry(logging =>
+if (observabilityEnabled)
 {
-    logging.SetResourceBuilder(resourceBuilder);
-    logging.IncludeScopes = true;
-    logging.IncludeFormattedMessage = true;
-    logging.AddOtlpExporter(options =>
+    var otlpEndpoint = ResolveOtlpEndpoint(
+        Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT"),
+        builder.Configuration["OpenTelemetry:OtlpEndpoint"]);
+
+    var resourceBuilder = ResourceBuilder.CreateDefault()
+        .AddService(serviceName: Diagnostics.ServiceName, serviceVersion: Diagnostics.ServiceVersion);
+
+    // 1. Configure OpenTelemetry Tracing
+    builder.Services.AddOpenTelemetry()
+        .WithTracing(tracing =>
+        {
+            tracing
+                .SetResourceBuilder(resourceBuilder)
+                .AddSource(Diagnostics.ServiceName)
+                .AddAspNetCoreInstrumentation(options =>
+                {
+                    options.RecordException = true;
+                })
+                .AddHttpClientInstrumentation(options =>
+                {
+                    options.RecordException = true;
+                })
+                .AddOtlpExporter(options =>
+                {
+                    options.Endpoint = new Uri(otlpEndpoint);
+                    options.Protocol = OtlpExportProtocol.Grpc;
+                });
+        })
+        // 2. Configure OpenTelemetry Metrics
+        .WithMetrics(metrics =>
+        {
+            metrics
+                .SetResourceBuilder(resourceBuilder)
+                .AddMeter(Diagnostics.ServiceName)
+                .AddMeter("Microsoft.AspNetCore.Hosting")
+                .AddMeter("Microsoft.AspNetCore.Server.Kestrel")
+                .AddMeter("System.Net.Http")
+                .AddAspNetCoreInstrumentation()
+                .AddHttpClientInstrumentation()
+                .AddRuntimeInstrumentation()
+                .AddOtlpExporter((options, readerOptions) =>
+                {
+                    options.Endpoint = new Uri(otlpEndpoint);
+                    options.Protocol = OtlpExportProtocol.Grpc;
+                    readerOptions.PeriodicExportingMetricReaderOptions.ExportIntervalMilliseconds = 2000;
+                });
+        });
+
+    // 3. Configure OpenTelemetry Logging
+    builder.Logging.ClearProviders();
+    builder.Logging.AddConsole(options => options.FormatterName = OtelJsonConsoleFormatter.FormatterName)
+        .AddConsoleFormatter<OtelJsonConsoleFormatter, ConsoleFormatterOptions>();
+    builder.Logging.AddOpenTelemetry(logging =>
     {
-        options.Endpoint = new Uri(otlpEndpoint);
-        options.Protocol = OtlpExportProtocol.Grpc;
+        logging.SetResourceBuilder(resourceBuilder);
+        logging.IncludeScopes = true;
+        logging.IncludeFormattedMessage = true;
+        logging.AddOtlpExporter(options =>
+        {
+            options.Endpoint = new Uri(otlpEndpoint);
+            options.Protocol = OtlpExportProtocol.Grpc;
+        });
     });
-});
+}
+else
+{
+    // Baseline sin instrumentación: sólo logging de consola estándar,
+    // sin ActivitySource/Meter listeners ni exportador OTLP registrados.
+    builder.Logging.ClearProviders();
+    builder.Logging.AddSimpleConsole(options =>
+    {
+        options.IncludeScopes = false;
+        options.SingleLine = true;
+    });
+    Console.WriteLine("[Startup] OBSERVABILITY_ENABLED=false -> OpenTelemetry pipeline disabled (baseline mode for overhead benchmarking).");
+}
 
 // -----------------------------------------------------------------------------
 // HttpClient & Couchbase Service Registration
