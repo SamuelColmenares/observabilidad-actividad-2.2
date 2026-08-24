@@ -239,6 +239,49 @@ docker-compose.yml         GitHub Secrets
 
 ---
 
+### 🧪 Bandera `OBSERVABILITY_ENABLED` — Benchmark de Overhead (Fase 4)
+
+Ambos servicios (`Passengers`, `Checkin`) exponen una variable de entorno para **apagar por completo** el pipeline de OpenTelemetry en runtime, sin necesidad de recompilar ni redeployar una imagen distinta. Esto permite comparar el mismo binario **con instrumentación** vs **sin instrumentación** durante el benchmark de overhead (k6/locust) de la Fase 4.
+
+| Variable | Valores | Efecto |
+|---|---|---|
+| `OBSERVABILITY_ENABLED` | `true` (default) / `false` | En `false`, **no se registra** ningún componente de OpenTelemetry (tracing, métricas, logging exporter, instrumentadores de AspNetCore/HttpClient/Npgsql/Runtime). Solo queda un logger de consola simple. Es el escenario **baseline** del benchmark. |
+| `OTEL_SDK_DISABLED` | `true` / `false` (default) | Variable **estándar** de la spec de OpenTelemetry, respetada automáticamente por el SDK. En `true`, el SDK sigue registrado (instrumentadores activos) pero deja de exportar datos (modo no-op). Útil para aislar solo el overhead de **red/exportación**, distinto del overhead total de instrumentación. |
+
+#### Cómo usarla
+
+**Local (Docker Compose):**
+```bash
+# Sin instrumentación (baseline)
+OBSERVABILITY_ENABLED=false docker compose up -d passengers checkin
+
+# Con instrumentación (default, no requiere la variable)
+docker compose up -d passengers checkin
+```
+
+**Cloud Run (alternar sin rebuild, usando la imagen ya desplegada):**
+```bash
+# Baseline: apagar instrumentación
+gcloud run services update passengers-service --region us-central1 \
+  --update-env-vars OBSERVABILITY_ENABLED=false
+gcloud run services update checkin-service --region us-central1 \
+  --update-env-vars OBSERVABILITY_ENABLED=false
+
+# Ejecutar el benchmark (k6/locust) contra el servicio en este estado...
+
+# Volver a activar la instrumentación
+gcloud run services update passengers-service --region us-central1 \
+  --update-env-vars OBSERVABILITY_ENABLED=true
+gcloud run services update checkin-service --region us-central1 \
+  --update-env-vars OBSERVABILITY_ENABLED=true
+
+# Ejecutar el mismo benchmark con instrumentación activa para comparar
+```
+
+> ⚠️ El benchmark comparativo en sí (ejecución de k6/locust, medición de p99/CPU/memoria y tabla comparativa) es responsabilidad de la Fase 4 y **no se ejecuta en este ajuste** — esta bandera solo deja preparado el mecanismo para que se pueda correr sin cambios de arquitectura ni redeploys adicionales.
+
+---
+
 ## 👁️ Cómo Visualizar las Trazas Registradas en Jaeger
 
 Existen **3 formas principales** para inspeccionar las trazas distribuidas capturadas por Jaeger:
@@ -610,5 +653,5 @@ gcloud projects add-iam-policy-binding ${PROJECT_ID} \
 - **Solo GCP.** El enunciado del laboratorio menciona una ruta alternativa en AWS (ECS Fargate + AWS X-Ray/Tempo). Esta actividad **no la implementa**: el repositorio, los workflows y los secrets están construidos exclusivamente alrededor de GCP (Cloud Run + GKE Autopilot + GCE), que es el proveedor que ya estaba en uso antes de este ajuste.
 - **Tempo fue reemplazado por Jaeger** (no coexisten) para cumplir literalmente con "Trazas: Jaeger UI (GCP)" del enunciado.
 - **PostgreSQL y Couchbase permanecen en la VM de GCE.** Solo se migró a GKE el plano de observabilidad (Collector, Jaeger, Prometheus, Grafana), que es lo que exige la Fase 2 del enunciado.
-- **Dashboards de Grafana (6 paneles), correlación logs↔trazas en profundidad y benchmark de overhead (k6/locust)** quedan fuera del alcance de este ajuste — la instrumentación, el Collector y los datasources necesarios ya quedan preparados (incluyendo métricas internas del Collector en `:8888` y `OpenTelemetry.Instrumentation.Runtime` para overhead de CPU/memoria) para que puedan completarse sin requerir cambios de arquitectura.
+- **Dashboards de Grafana (6 paneles), correlación logs↔trazas en profundidad y benchmark de overhead (k6/locust)** quedan fuera del alcance de este ajuste — la instrumentación, el Collector y los datasources necesarios ya quedan preparados (incluyendo métricas internas del Collector en `:8888`, `OpenTelemetry.Instrumentation.Runtime` para overhead de CPU/memoria, y la bandera `OBSERVABILITY_ENABLED` para alternar entre "con instrumentación" y "sin instrumentación" — ver sección [Bandera OBSERVABILITY_ENABLED](#-bandera-observability_enabled--benchmark-de-overhead-fase-4)) para que puedan completarse sin requerir cambios de arquitectura.
 
