@@ -360,17 +360,19 @@ Ambos servicios emiten logs de consola en JSON (`OtelJsonConsoleFormatter`) con 
 - **Local**: `docker-compose logs -f checkin` / `docker-compose logs -f passengers`.
 - **GCP**: los mismos logs llegan también al OTel Collector vía OTLP y de ahí a **Cloud Logging** (exporter `googlecloud`, pipeline de logs en `k8s/gcp/01-configmaps.yaml`).
 
-### Plugin de Google Cloud Logging y Correlación en Grafana
+### Redirección Automática Logs → Traza (Grafana Correlations)
 
-El Grafana desplegado en GKE incluye el datasource **Google Cloud Logging** (plugin oficial `googlecloud-logging-datasource`), autenticado vía Workload Identity (sin llaves JSON — ver permisos requeridos más abajo). Para poder pivotear de un log en Cloud Logging hacia su traza en Jaeger usando `trace_id`, configura una vez la función **Correlations** de Grafana (no se aprovisiona por YAML porque requiere el UID real del datasource Jaeger ya creado):
+El datasource nativo **Google Cloud Logging** (plugin `googlecloud-logging-datasource`) solo soporta "logs to traces" hacia **Google Cloud Trace** — no hacia Jaeger. Como este proyecto exporta las trazas a Jaeger (no a Cloud Trace), la redirección se implementa con el mecanismo genérico **Grafana Correlations** (GA desde Grafana 10.3), aprovisionado directamente por YAML en `k8s/gcp/01-configmaps.yaml`:
 
-1. Entra a **Administration → Plugins and data → Correlations → Add**.
-2. **Label**: `Cloud Logging → Jaeger`.
-3. **Target data source**: `Jaeger`. En la query, usa el trace ID como variable (`${traceId}`).
-4. **Source data source**: `Google Cloud Logging`. **Results field**: el campo `trace` (o `trace_id` si extraes con una transformación `regex`/`logfmt` del `jsonPayload`).
-5. Guarda. Desde ahora, cualquier resultado de Cloud Logging con ese campo mostrará un enlace que abre la traza correspondiente en Jaeger dentro de Grafana Explore.
+- Los 3 datasources (`Prometheus`, `Jaeger`, `Google Cloud Logging`) tienen un **UID fijo** (`prometheus`, `jaeger`, `cloud-logging`) para poder referenciarlos de forma determinística.
+- El datasource `Google Cloud Logging` declara una `correlations:` apuntando por `targetUID: jaeger`, usando el campo `jsonPayload.trace_id` del resultado del log (Cloud Run parsea automáticamente el stdout JSON de la app como `jsonPayload`) y ejecutando una query `TraceID` en Jaeger con ese valor.
 
-> Se documenta como paso manual de una sola vez (vía UI) en lugar de aprobar directamente el YAML de correlación, porque la estructura exacta del "target query" depende del UID que Grafana asigna al datasource Jaeger en tiempo de ejecución — ver [documentación oficial de Grafana Correlations](https://grafana.com/docs/grafana/latest/administration/correlations/).
+**Cómo usarla:**
+1. Abre Grafana Explore, selecciona el datasource **Google Cloud Logging**.
+2. Ejecuta una consulta de logs (ej. filtrando por `resource.labels.service_name="passengers-service"`).
+3. Expandiendo un log verás el campo `jsonPayload.trace_id` con un enlace **"Ver traza completa en Jaeger"** — al hacer clic, abre esa traza en un panel dividido de Explore usando el datasource Jaeger.
+
+> ⚠️ **Si el enlace no aparece o no resuelve la traza**: el nombre exacto del campo puede variar según cómo el plugin aplane el JSON del log en el resultado. Verifica el nombre real abriendo Explore → Google Cloud Logging → ejecuta una query → **Query Inspector** → revisa los campos devueltos, y ajusta `correlations[].config.field` en `k8s/gcp/01-configmaps.yaml` (o edítalo directamente en **Administration → Plugins and data → Correlations** en la UI de Grafana, sin necesidad de reaplicar el manifiesto). Ver [documentación oficial de Grafana Correlations](https://grafana.com/docs/grafana/latest/administration/correlations/).
 
 ---
 
